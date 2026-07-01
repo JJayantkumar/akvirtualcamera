@@ -137,38 +137,29 @@ void AkVCam::ServicePrivate::removeClientById(void *userData,
     auto self = reinterpret_cast<ServicePrivate *>(userData);
 
     self->m_peerMutex.lock();
-    std::string removeDevice;
+    std::vector<std::string> devicesToRemove;
 
     for (auto &slot: self->m_broadcasts) {
+        // 1. Always evaluate Broadcaster independently
         if (slot.second.broadcaster.clientId == clientId) {
             slot.second.broadcaster = {0, 0};
+        } 
+        
+        // 2. FIXNO19 modified - FLAW 2 SEALED: NO 'else' statement here! Always evaluate Listeners.
+        // Use remove_if to instantly purge ALL instances of this client, preventing ghost duplicates.
+        auto newEnd = std::remove_if(slot.second.listeners.begin(), 
+                                     slot.second.listeners.end(),
+                                     [&clientId](const Peer &peer) { return peer.clientId == clientId; });
+        slot.second.listeners.erase(newEnd, slot.second.listeners.end());
 
-            if (slot.second.listeners.empty())
-                removeDevice = slot.first;
-
-            break;
-        } else {
-            auto it = std::find_if(slot.second.listeners.begin(),
-                                   slot.second.listeners.end(),
-                                   [&clientId] (const Peer &peer) -> bool {
-                return peer.clientId == clientId;
-            });
-
-            if (it != slot.second.listeners.end()) {
-                slot.second.listeners.erase(it);
-
-                if (slot.second.broadcaster.pid == 0
-                    && slot.second.listeners.empty()) {
-                    removeDevice = slot.first;
-                }
-
-                break;
-            }
+        // 3. If the slot is now completely dead, mark it for removal
+        if (slot.second.broadcaster.pid == 0 && slot.second.listeners.empty()) {
+            devicesToRemove.push_back(slot.first);
         }
     }
 
-    if (!removeDevice.empty())
-        self->m_broadcasts.erase(removeDevice);
+    for (const auto& devId : devicesToRemove)//FIXNO19 change
+        self->m_broadcasts.erase(devId);//FIXNO19 Ends
 
     self->m_peerMutex.unlock();
 }

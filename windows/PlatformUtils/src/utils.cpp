@@ -224,7 +224,10 @@ std::string AkVCam::dirname(const std::string &path)
 
 bool AkVCam::fileExists(const std::string &path)
 {
-    return GetFileAttributesA(path.c_str()) & FILE_ATTRIBUTE_ARCHIVE;
+    //FIXNO11 Starts
+    DWORD attr = GetFileAttributesA(path.c_str());
+    return (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY));
+    //FIXNO11 Ends
 }
 
 std::string AkVCam::realPath(const std::string &path)
@@ -1009,7 +1012,7 @@ LSTATUS AkVCam::deleteTree(HKEY key, LPCSTR subkey, REGSAM samFlags)
     }
 
     // Delete subkeys
-    for (DWORD i = 0; i < subKeys; i++) {
+    for (int i = (int)subKeys - 1; i >= 0; i--) { //FIXNO13.1
         auto len = maxSubKeyLen + 1;
         CHAR *name = new CHAR[len];
         memset(name, 0, len * sizeof(CCHAR));
@@ -1030,7 +1033,7 @@ LSTATUS AkVCam::deleteTree(HKEY key, LPCSTR subkey, REGSAM samFlags)
     }
 
     // Delete values
-    for (DWORD i = 0; i < values; i++) {
+    for (int i = (int)values - 1; i >= 0; i--) { //FIXNO13.2
         auto len = maxValueNameLen + 1;
         TCHAR *name = new TCHAR[len];
         memset(name, 0, len * sizeof(TCHAR));

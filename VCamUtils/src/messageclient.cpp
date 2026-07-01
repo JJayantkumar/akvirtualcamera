@@ -83,9 +83,10 @@ bool AkVCam::MessageClient::isUp(uint16_t port)
 
     // Set the port
     sockaddr_in serverAddress;
+    memset(&serverAddress, 0, sizeof(serverAddress)); // FIXNO8.1 : Clear garbage padding
     serverAddress.sin_family = AF_INET;
     serverAddress.sin_port = htons(port);
-    serverAddress.sin_addr.s_addr = INADDR_ANY;
+    serverAddress.sin_addr.s_addr = htonl(INADDR_LOOPBACK); //FIXNO8.1 Use localhost.
 
     // Connect to the server
     if (connect(clientSocket,
@@ -232,9 +233,10 @@ bool AkVCam::MessageClientPrivate::connection(uint16_t port,
 
     // Set the port
     sockaddr_in serverAddress;
+    memset(&serverAddress, 0, sizeof(serverAddress)); // FIX8.2: Clear garbage padding
     serverAddress.sin_family = AF_INET;
     serverAddress.sin_port = htons(port);
-    serverAddress.sin_addr.s_addr = INADDR_ANY;
+    serverAddress.sin_addr.s_addr = htonl(INADDR_LOOPBACK); // FIX8.2: Use 127.0.0.1
 
     // Connect to the server
     if (connect(clientSocket,

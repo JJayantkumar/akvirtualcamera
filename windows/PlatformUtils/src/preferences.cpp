@@ -63,7 +63,7 @@ bool AkVCam::Preferences::write(const std::string &key,
     AkLogFunction();
     AkLogDebug("Writing: %s = %s", key.c_str(), value.c_str());
 
-    return setValue(key, REG_SZ, value.c_str(), DWORD(value.size()), global);
+    return setValue(key, REG_SZ, value.c_str(), DWORD(value.size()+1), global); //FIXNO12.1.1 added 1 here
 }
 
 bool AkVCam::Preferences::write(const std::string &key, int value, bool global)
@@ -103,7 +103,7 @@ bool AkVCam::Preferences::write(const std::string &key,
     return setValue(key,
                     REG_SZ,
                     val.c_str(),
-                    DWORD(val.size()),
+                    DWORD(val.size()+1), //FIXNO12.1.2 Added 1 here
                     global);
 }
 
@@ -159,7 +159,7 @@ int64_t AkVCam::Preferences::readInt64(const std::string &key,
     if (!readValue(key, RRF_RT_REG_QWORD, &value, &valueSize, global))
         return defaultValue;
 
-    return int(value);
+    return static_cast<int64_t>(value); //Preserve full 64-bit data (FIXNO7 change this line from int(value))
 }
 
 double AkVCam::Preferences::readDouble(const std::string &key,
@@ -295,7 +295,7 @@ std::string AkVCam::Preferences::addCamera(const std::string &deviceId,
         return {};
 
     bool ok = true;
-    int cameraIndex = readInt("Cameras\\", 0, true) + 1;
+    int cameraIndex = readInt("Cameras\\size", 0, true) + 1; //FIXNO14 add 'size' in this line
     ok &= write("Cameras\\size", cameraIndex, true);
     ok &= write("Cameras\\"
                 + std::to_string(cameraIndex)
@@ -565,7 +565,7 @@ bool AkVCam::Preferences::cameraRemoveFormat(size_t cameraIndex, int index)
     for (size_t i = 0; i < formats.size(); i++) {
         auto &format = formats[i];
         auto prefix = "Cameras\\"
-                    + std::to_string(cameraIndex)
+                    + std::to_string(cameraIndex + 1)//FIXNO15
                     + "\\Formats\\"
                     + std::to_string(i + 1);
         auto formatStr = pixelFormatToCommonString(format.format());

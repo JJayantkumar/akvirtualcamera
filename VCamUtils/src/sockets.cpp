@@ -112,17 +112,37 @@ bool AkVCam::Sockets::recv(SocketType socket, void *data, size_t dataSize)
 
 bool AkVCam::Sockets::recv(SocketType socket, std::vector<char> &data)
 {
-    bool ok = true;
     size_t dataSize = 0;
-    ok &= Sockets::recv(socket,
-                        reinterpret_cast<char *>(&dataSize),
-                        sizeof(size_t));
-    data.resize(dataSize);
 
-    if (ok && dataSize > 0)
-        ok &= Sockets::recv(socket, data.data(), dataSize);
+    // 1. EARLY RETURN: If the socket drops or fails, exit immediately.
+    if (!Sockets::recv(socket,
+                       reinterpret_cast<char *>(&dataSize),
+                       sizeof(size_t))) {
+        return false;
+    }
 
-    return ok;
+    // 2. PREEMPTIVE CEILING: Prevent malicious/garbage sizes from freezing the OS.
+    // 1 Gigabyte is vastly larger than any normal video frame payload.
+    constexpr size_t MAX_IPC_MESSAGE_SIZE = 1024 * 1024 * 1024; // 1 GB
+    if (dataSize > MAX_IPC_MESSAGE_SIZE) {
+        AkLogError("Socket recv: dataSize %zu exceeds strict IPC limits", dataSize);
+        return false;
+    }
+
+    // 3. DEFENSIVE ALLOCATION: Catch extreme edge cases (like low system memory).
+    try {
+        data.resize(dataSize);
+    } catch (...) {
+        AkLogError("Socket recv: std::bad_alloc. System out of memory for size %zu", dataSize);
+        return false;
+    }
+
+    // 4. SAFE RECV: Only attempt to read if there is actual data expected.
+    if (dataSize > 0) {
+        return Sockets::recv(socket, data.data(), dataSize);
+    }
+
+    return true; // Successfully received a 0-byte message
 }
 
 void AkVCam::Sockets::closeSocket(SocketType socket)

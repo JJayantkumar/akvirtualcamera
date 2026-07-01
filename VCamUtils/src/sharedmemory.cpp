@@ -187,7 +187,7 @@ void *AkVCam::SharedMemory::lock(int timeout)
 
     if (this->d->m_mode == OpenModeRead && !this->d->m_readyRead) {
         if (!this->d->openRead(this->d->m_pageSize)) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+            std::this_thread::sleep_for(std::chrono::milliseconds(30)); //FIXNO10 change 1000 to 30
 
             return nullptr;
         }
@@ -339,7 +339,7 @@ bool AkVCam::SharedMemoryPrivate::openRead(size_t pageSize)
 #ifdef _WIN32
     // Open shared memory
     this->m_sharedHandle =
-            OpenFileMappingA(FILE_MAP_ALL_ACCESS,
+            OpenFileMappingA(FILE_MAP_READ, //FIXNO9.1 (Changed from MAP_ALL_ACCESS)
                              FALSE,
                              this->m_name.c_str());
 
@@ -353,7 +353,7 @@ bool AkVCam::SharedMemoryPrivate::openRead(size_t pageSize)
 
     // Map shared memory
     this->m_buffer = MapViewOfFile(this->m_sharedHandle,
-                                   FILE_MAP_ALL_ACCESS,
+                                   FILE_MAP_READ, //FIXNO9.2 changed from ALL_ACCESS
                                    0,
                                    0,
                                    pageSize);

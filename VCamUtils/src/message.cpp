@@ -195,16 +195,13 @@ AkVCam::MsgStatus::MsgStatus(const MsgStatus &other):
     this->d->m_status = other.d->m_status;
 }
 
-AkVCam::MsgStatus::MsgStatus(const Message &message):
+AkVCam::MsgStatus::MsgStatus(const Message &message): //FIXNOpost2 - Changed this MsgStatus.
     MsgCommons(message.queryId())
 {
     this->d = new MsgStatusPrivate;
-    auto totalSize = sizeof(this->d->m_status);
+    if (message.id() != AKVCAM_SERVICE_MSG_STATUS) return;
 
-    if (message.id() != AKVCAM_SERVICE_MSG_STATUS
-        || message.data().size() != totalSize)
-        return;
-
+    if (message.data().size() != sizeof(this->d->m_status)) return;
     memcpy(&this->d->m_status, message.data().data(), sizeof(this->d->m_status));
 }
 
@@ -266,64 +263,34 @@ AkVCam::MsgClients::MsgClients(ClientType clientType):
     this->d->m_clientType = clientType;
 }
 
-AkVCam::MsgClients::MsgClients(ClientType clientType,
-                               const std::vector<uint64_t> &clients):
-    MsgCommons()
-{
-    this->d = new MsgClientsPrivate;
-    this->d->m_clientType = clientType;
-    this->d->m_clients = clients;
-}
-
-AkVCam::MsgClients::MsgClients(ClientType clientType,
-                               const std::vector<uint64_t> &clients,
-                               uint64_t queryId):
-    MsgCommons(queryId)
-{
-    this->d = new MsgClientsPrivate;
-    this->d->m_clientType = clientType;
-    this->d->m_clients = clients;
-}
-
-AkVCam::MsgClients::MsgClients(const MsgClients &other):
-    MsgCommons(other.queryId())
-{
-    this->d = new MsgClientsPrivate;
-    this->d->m_clientType = other.d->m_clientType;
-    this->d->m_clients = other.d->m_clients;
-}
-
-AkVCam::MsgClients::MsgClients(const Message &message):
+AkVCam::MsgClients::MsgClients(const Message &message): //FIXNOpost2 Starts
     MsgCommons(message.queryId())
 {
     this->d = new MsgClientsPrivate;
-    size_t totalSize = 0;
-
-    {
-        totalSize += sizeof(this->d->m_clientType);
-
-        size_t clientsSize = 0;
-        memcpy(&clientsSize, message.data().data() + totalSize, sizeof(size_t) * clientsSize);
-        totalSize += sizeof(size_t) + sizeof(sizeof(uint64_t) * clientsSize);
-    }
-
-    if (message.id() != AKVCAM_SERVICE_MSG_CLIENTS
-        || message.data().size() != totalSize)
-        return;
+    if (message.id() != AKVCAM_SERVICE_MSG_CLIENTS) return;
 
     size_t offset = 0;
-    memcpy(&this->d->m_clientType, message.data().data() + offset, sizeof(this->d->m_clientType));
+    size_t bufferSize = message.data().size();
+    const char* buffer = message.data().data();
+
+    if (bufferSize - offset < sizeof(this->d->m_clientType)) return;
+    memcpy(&this->d->m_clientType, buffer + offset, sizeof(this->d->m_clientType));
     offset += sizeof(this->d->m_clientType);
 
+    if (bufferSize - offset < sizeof(size_t)) return;
     size_t clientsSize = 0;
-    memcpy(&clientsSize, message.data().data() + offset, sizeof(clientsSize));
-    offset += sizeof(clientsSize);
+    memcpy(&clientsSize, buffer + offset, sizeof(size_t));
+    offset += sizeof(size_t);
+
+    size_t maxElements = (bufferSize - offset) / sizeof(uint64_t);
+    if (clientsSize > maxElements) return; // Prevent integer overflow
+    if (bufferSize - offset != clientsSize * sizeof(uint64_t)) return;
 
     if (clientsSize > 0) {
         this->d->m_clients.resize(clientsSize);
-        memcpy(this->d->m_clients.data(), message.data().data() + offset, sizeof(uint64_t) * clientsSize);
+        memcpy(this->d->m_clients.data(), buffer + offset, clientsSize * sizeof(uint64_t));
     }
-}
+}//FIXNOpost2 ends
 
 AkVCam::MsgClients::~MsgClients()
 {
@@ -452,67 +419,60 @@ AkVCam::MsgFrameReady::MsgFrameReady(const MsgFrameReady &other):
     this->d->m_isActive = other.d->m_isActive;
 }
 
-AkVCam::MsgFrameReady::MsgFrameReady(const Message &message):
+AkVCam::MsgFrameReady::MsgFrameReady(const Message &message): //FIXNOpost2 Starts
     MsgCommons(message.queryId())
 {
     this->d = new MsgFrameReadyPrivate;
-    size_t totalSize = 0;
-
-    {
-        size_t deviceSize = 0;
-        memcpy(&deviceSize, message.data().data() + totalSize, sizeof(size_t));
-        totalSize += sizeof(size_t) + deviceSize;
-
-        totalSize += sizeof(PixelFormat);
-        totalSize += sizeof(int);
-        totalSize += sizeof(int);
-
-        size_t dataSize = 0;
-        memcpy(&dataSize, message.data().data() + totalSize, sizeof(size_t));
-        totalSize += sizeof(size_t) + dataSize;
-
-        totalSize += sizeof(this->d->m_isActive);
-    }
-
-    if (message.id() != AKVCAM_SERVICE_MSG_FRAME_READY
-        || message.data().size() != totalSize)
-        return;
+    if (message.id() != AKVCAM_SERVICE_MSG_FRAME_READY) return;
 
     size_t offset = 0;
+    size_t bufferSize = message.data().size();
+    const char* buffer = message.data().data();
 
+    if (bufferSize - offset < sizeof(size_t)) return;
     size_t deviceSize = 0;
-    memcpy(&deviceSize, message.data().data() + offset, sizeof(size_t));
+    memcpy(&deviceSize, buffer + offset, sizeof(size_t));
     offset += sizeof(size_t);
 
+    if (bufferSize - offset < deviceSize) return;
     if (deviceSize > 0) {
-        this->d->m_device = {message.data().data() + offset, deviceSize};
+        this->d->m_device = std::string(buffer + offset, deviceSize);
         offset += deviceSize;
     }
 
+    size_t fmtSize = sizeof(PixelFormat) + sizeof(int) + sizeof(int);
+    if (bufferSize - offset < fmtSize) return;
+    
     PixelFormat fourcc = PixelFormat_none;
-    memcpy(&fourcc, message.data().data() + offset, sizeof(fourcc));
+    memcpy(&fourcc, buffer + offset, sizeof(fourcc));
     offset += sizeof(fourcc);
 
     int width = 0;
-    memcpy(&width, message.data().data() + offset, sizeof(width));
+    memcpy(&width, buffer + offset, sizeof(width));
     offset += sizeof(width);
 
     int height = 0;
-    memcpy(&height, message.data().data() + offset, sizeof(height));
+    memcpy(&height, buffer + offset, sizeof(height));
     offset += sizeof(height);
 
+    if (bufferSize - offset < sizeof(size_t)) return;
     size_t dataSize = 0;
-    memcpy(&dataSize, message.data().data() + offset, sizeof(size_t));
+    memcpy(&dataSize, buffer + offset, sizeof(size_t));
     offset += sizeof(size_t);
 
+    if (bufferSize - offset < sizeof(bool)) return;
+    if (bufferSize - offset - sizeof(bool) < dataSize) return;
+    
     if (dataSize > 0) {
-        this->d->m_frame = {VideoFormat(fourcc, width, height)};
-        memcpy(this->d->m_frame.data(), message.data().data() + offset, dataSize);
+        this->d->m_frame = VideoFrame(VideoFormat(fourcc, width, height));
+        if (this->d->m_frame.size() > 0) {
+            memcpy(this->d->m_frame.data(), buffer + offset, std::min(dataSize, this->d->m_frame.size()));
+        }
         offset += dataSize;
     }
 
-    memcpy(&this->d->m_isActive, message.data().data() + offset, sizeof(this->d->m_isActive));
-}
+    memcpy(&this->d->m_isActive, buffer + offset, sizeof(bool));
+} //FIXNOpost2 Ends
 
 AkVCam::MsgFrameReady::~MsgFrameReady()
 {
@@ -676,70 +636,59 @@ AkVCam::MsgBroadcast::MsgBroadcast(const MsgBroadcast &other):
     this->d->m_frame = other.d->m_frame;
 }
 
-AkVCam::MsgBroadcast::MsgBroadcast(const Message &message):
+AkVCam::MsgBroadcast::MsgBroadcast(const Message &message): //FIXNOpost2 Starts
     MsgCommons(message.queryId())
 {
     this->d = new MsgBroadcastPrivate;
-    size_t totalSize = 0;
-
-    {
-        size_t deviceSize = 0;
-        memcpy(&deviceSize, message.data().data() + totalSize, sizeof(size_t));
-        totalSize += sizeof(size_t) + deviceSize;
-
-        totalSize += sizeof(this->d->m_pid);
-        totalSize += sizeof(PixelFormat);
-        totalSize += sizeof(int);
-        totalSize += sizeof(int);
-
-        size_t dataSize = 0;
-        memcpy(&dataSize, message.data().data() + totalSize, sizeof(size_t));
-        totalSize += sizeof(size_t) + dataSize;
-    }
-
-    if (message.id() != AKVCAM_SERVICE_MSG_BROADCAST
-        || message.data().size() != totalSize)
-        return;
+    if (message.id() != AKVCAM_SERVICE_MSG_BROADCAST) return;
 
     size_t offset = 0;
+    size_t bufferSize = message.data().size();
+    const char* buffer = message.data().data();
 
+    if (bufferSize - offset < sizeof(size_t)) return;
     size_t deviceSize = 0;
-    memcpy(&deviceSize, message.data().data() + offset, sizeof(size_t));
+    memcpy(&deviceSize, buffer + offset, sizeof(size_t));
     offset += sizeof(size_t);
 
+    if (bufferSize - offset < deviceSize) return;
     if (deviceSize > 0) {
-        this->d->m_device = {message.data().data() + offset, deviceSize};
+        this->d->m_device = std::string(buffer + offset, deviceSize);
         offset += deviceSize;
     }
 
-    memcpy(&this->d->m_pid, message.data().data() + offset, sizeof(this->d->m_pid));
-    offset += sizeof(this->d->m_pid);
+    size_t fixedSize = sizeof(uint64_t) + sizeof(PixelFormat) + sizeof(int) + sizeof(int);
+    if (bufferSize - offset < fixedSize) return;
+
+    memcpy(&this->d->m_pid, buffer + offset, sizeof(uint64_t));
+    offset += sizeof(uint64_t);
 
     PixelFormat fourcc = PixelFormat_none;
-    memcpy(&fourcc, message.data().data() + offset, sizeof(fourcc));
+    memcpy(&fourcc, buffer + offset, sizeof(fourcc));
     offset += sizeof(fourcc);
 
     int width = 0;
-    memcpy(&width, message.data().data() + offset, sizeof(width));
+    memcpy(&width, buffer + offset, sizeof(width));
     offset += sizeof(width);
 
     int height = 0;
-    memcpy(&height, message.data().data() + offset, sizeof(height));
+    memcpy(&height, buffer + offset, sizeof(height));
     offset += sizeof(height);
 
+    if (bufferSize - offset < sizeof(size_t)) return;
     size_t dataSize = 0;
-    memcpy(&dataSize, message.data().data() + offset, sizeof(size_t));
+    memcpy(&dataSize, buffer + offset, sizeof(size_t));
     offset += sizeof(size_t);
 
+    if (bufferSize - offset < dataSize) return;
+    
     if (dataSize > 0) {
-        this->d->m_frame = {VideoFormat(fourcc, width, height)};
-
-        if (this->d->m_frame.size() > 0)
-            memcpy(this->d->m_frame.data(),
-                   message.data().data() + offset,
-                   std::min(dataSize, this->d->m_frame.size()));
+        this->d->m_frame = VideoFrame(VideoFormat(fourcc, width, height));
+        if (this->d->m_frame.size() > 0) {
+            memcpy(this->d->m_frame.data(), buffer + offset, std::min(dataSize, this->d->m_frame.size()));
+        }
     }
-}
+}//FIXNOpost2 ends
 
 AkVCam::MsgBroadcast::~MsgBroadcast()
 {
@@ -877,37 +826,30 @@ AkVCam::MsgListen::MsgListen(const MsgListen &other):
     this->d->m_pid = other.d->m_pid;
 }
 
-AkVCam::MsgListen::MsgListen(const Message &message):
+AkVCam::MsgListen::MsgListen(const Message &message): //FIXNOpost2 Starts
     MsgCommons(message.queryId())
 {
     this->d = new MsgListenPrivate;
-    size_t totalSize = 0;
-
-    {
-        size_t deviceSize = 0;
-        memcpy(&deviceSize, message.data().data() + totalSize, sizeof(size_t));
-        totalSize += sizeof(size_t) + deviceSize;
-
-        totalSize += sizeof(this->d->m_pid);
-    }
-
-    if (message.id() != AKVCAM_SERVICE_MSG_LISTEN
-        || message.data().size() != totalSize)
-        return;
+    if (message.id() != AKVCAM_SERVICE_MSG_LISTEN) return;
 
     size_t offset = 0;
+    size_t bufferSize = message.data().size();
+    const char* buffer = message.data().data();
 
+    if (bufferSize - offset < sizeof(size_t)) return;
     size_t deviceSize = 0;
-    memcpy(&deviceSize, message.data().data() + offset, sizeof(size_t));
+    memcpy(&deviceSize, buffer + offset, sizeof(size_t));
     offset += sizeof(size_t);
 
+    if (bufferSize - offset < deviceSize) return;
     if (deviceSize > 0) {
-        this->d->m_device = {message.data().data() + offset, deviceSize};
+        this->d->m_device = std::string(buffer + offset, deviceSize);
         offset += deviceSize;
     }
 
-    memcpy(&this->d->m_pid, message.data().data() + offset, sizeof(this->d->m_pid));
-}
+    if (bufferSize - offset != sizeof(uint64_t)) return; // Strict bounds check for end of message
+    memcpy(&this->d->m_pid, buffer + offset, sizeof(uint64_t));
+} //FIXNOpost2 ends
 
 AkVCam::MsgListen::~MsgListen()
 {

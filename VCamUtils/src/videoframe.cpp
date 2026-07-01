@@ -565,11 +565,11 @@ bool AkVCam::VideoFrame::load(const std::string &fileName)
         return false;
     }
 
-    size_t srcLineSize =
-            Algorithm::alignUp<size_t>(imageHeader.width
-                                       * imageHeader.bitCount
-                                       / 8,
-                                       32);
+    size_t srcLineSize = ((static_cast<size_t>(imageHeader.width) * imageHeader.bitCount + 31) / 32) * 4; //FIXNOExtra - BMP rows are padded to 4-byte boundaries (32 bits, not 32 bytes)
+
+    if (imageHeader.sizeImage == 0) { //FIX: Handle standard uncompressed BMPs where sizeImage is 0
+        imageHeader.sizeImage = srcLineSize * imageHeader.height;
+    }
 
     stream.seekg(header.offBits, std::ios_base::beg);
     std::vector<uint8_t> data;

@@ -129,9 +129,10 @@ int AkVCam::MessageServer::run()
 
     // Set the port
     sockaddr_in serverAddress;
+    memset(&serverAddress, 0, sizeof(serverAddress)); // Clear garbage padding FIXNO8.2
     serverAddress.sin_family = AF_INET;
     serverAddress.sin_port = htons(this->d->m_port);
-    serverAddress.sin_addr.s_addr = INADDR_ANY;
+    serverAddress.sin_addr.s_addr = htonl(INADDR_LOOPBACK); //FIXNO8.2
 
     // Bind the socket
     if (bind(serverSocket,

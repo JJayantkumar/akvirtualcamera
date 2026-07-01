@@ -552,20 +552,27 @@ void AkVCam::IpcBridge::deviceStop(const std::string &deviceId)
     {
         std::lock_guard<std::mutex> lock(this->d->m_broadcastsMutex);
 
-        if (this->d->m_broadcasts.count(deviceId) < 1) {
+        auto it = this->d->m_broadcasts.find(deviceId);
+        if (it == this->d->m_broadcasts.end()) {
             AkLogDebug("Device %s not found in broadcasts", deviceId.c_str());
-
             return;
         }
 
-        auto &slot = this->d->m_broadcasts[deviceId];
+        auto &slot = it->second;
         slot.sharedMemory.close();
-        slot.run = false;
-        messageFuture = std::move(slot.messageFuture); // Move the future
+        {
+            std::lock_guard<std::mutex> frameLock(slot.frameMutex); 
+            slot.run = false; 
+            slot.frameAvailable.notify_all(); 
+        }
+        messageFuture = std::move(slot.messageFuture); 
         AkLogDebug("Set run = false for device: %s", deviceId.c_str());
+        
+        // CRITICAL FIX: Do NOT erase the map item here! 
+        // Erasing it while the background thread is alive causes a Use-After-Free.
     } // m_broadcastsMutex is released here
 
-    // Wait for the connection loop to end
+    // Safely wait for the thread to die outside of the map lock.
     if (messageFuture.valid()) {
         AkLogDebug("Waiting for messageFuture for device: %s", deviceId.c_str());
         auto status = messageFuture.wait_for(std::chrono::seconds(5));
@@ -578,7 +585,7 @@ void AkVCam::IpcBridge::deviceStop(const std::string &deviceId)
         AkLogWarning("Invalid messageFuture for device: %s", deviceId.c_str());
     }
 
-    // Remove the device after the future is complete
+    // THE THREAD IS NOW DEAD. It is 100% safe to erase the memory.
     {
         std::lock_guard<std::mutex> lock(this->d->m_broadcastsMutex);
         this->d->m_broadcasts.erase(deviceId);
@@ -627,8 +634,7 @@ bool AkVCam::IpcBridge::write(const std::string &deviceId,
             sharedFrame->height = frame.format().height();
             auto dataSize =
                     std::min(slot.sharedMemory.pageSize()
-                             - sizeof(SharedFrame)
-                             + sizeof(void *),
+                             - offsetof(SharedFrame, data), //FIXNO6.1, change to offsetof
                              frame.size());
 
             if (dataSize > 0)
@@ -906,20 +912,22 @@ bool AkVCam::IpcBridgePrivate::frameRequired(const std::string &deviceId,
     }
 
     auto &slot = this->m_broadcasts[deviceId];
-
+    this->m_broadcastsMutex.unlock(); // FIXNO16.1: Unlock BEFORE sleeping (basically preponed this unlock)
     std::unique_lock<std::mutex> lock(slot.frameMutex);
 
-    if (!slot.available)
+    if (!slot.available){
         slot.frameAvailable.wait_for(lock,
-                                     std::chrono::seconds(1));
+                                     std::chrono::seconds(1),
+                                     [&slot] { return slot.available || !slot.run; }); //FIXNO additional line here, thread won't sleep if deviceStop fires.
+        }
 
-    auto &frame = slot.frame;
+    VideoFrame frameCopy = slot.frame; // FIXNO16.1: Copy data locally
     auto run = slot.run;
     slot.available = false;
     lock.unlock();
 
-    message = MsgBroadcast(deviceId, currentPid(), frame).toMessage();
-    this->m_broadcastsMutex.unlock();
+    message = MsgBroadcast(deviceId, currentPid(), frameCopy).toMessage();
+    // FIXNO16.1 commented code : this->m_broadcastsMutex.unlock();
 
     return run;
 }
@@ -957,9 +965,8 @@ bool AkVCam::IpcBridgePrivate::frameReady(const Message &message)
 
             auto dataSize =
                     std::min(slot.sharedMemory.pageSize()
-                             - sizeof(SharedFrame)
-                             + sizeof(void *),
-                             slot.frame.size());
+                             - offsetof(SharedFrame, data), //FIXNO6.2 (same as 6.1)
+                             slot.frame.size()); //This should be slot.; don't remove it, and in 6.1 it is removed.
 
             if (dataSize > 0)
                 memcpy(slot.frame.data(), sharedFrame->data, dataSize);

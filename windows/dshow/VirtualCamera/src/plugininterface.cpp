@@ -160,7 +160,7 @@ bool AkVCam::PluginInterfacePrivate::registerServer(const std::string &deviceId,
                          nullptr,
                          REG_SZ,
                          description.c_str(),
-                         DWORD(description.size()));
+                         DWORD(description.size()+1)); //FIXNO12.2.1 (add 1)
 
     if (result != ERROR_SUCCESS)
         goto registerServer_failed;
@@ -175,7 +175,7 @@ bool AkVCam::PluginInterfacePrivate::registerServer(const std::string &deviceId,
                          nullptr,
                          REG_SZ,
                          fileName.c_str(),
-                         DWORD(fileName.size()));
+                         DWORD(fileName.size()+1)); //FIXNO12.2.2 (add 1)
 
     if (result != ERROR_SUCCESS)
         goto registerServer_failed;
@@ -249,6 +249,9 @@ bool AkVCam::PluginInterfacePrivate::registerFilter(const std::string &deviceId,
     regFilter.rgPins2 = pins.data();
 
     auto result = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    bool requiresUninit = SUCCEEDED(result); // FIXNO21.1: Track ownership
+    if (result == RPC_E_CHANGED_MODE) result = S_OK; // FIXNO21.1: Ignore apartment conflict
+
     bool ok = false;
     LPWSTR wdescription = nullptr;
 
@@ -285,7 +288,7 @@ registerFilter_failed:
     if (filterMapper)
         filterMapper->Release();
 
-    CoUninitialize();
+    if (requiresUninit) CoUninitialize(); // FIXNO21.1: Safe teardown
 
     AkLogInfo("Result: %s", stringFromResult(result).c_str());
 
@@ -304,6 +307,8 @@ void AkVCam::PluginInterfacePrivate::unregisterFilter(const CLSID &clsid) const
     AkLogFunction();
     IFilterMapper2 *filterMapper = nullptr;
     auto result = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    bool requiresUninit = SUCCEEDED(result); // FIXNO21.2: Track ownership (identical to 21.1)
+    if (result == RPC_E_CHANGED_MODE) result = S_OK; // FIXNO21.2: Ignore apartment conflict (identical to 21.1)
 
     if (FAILED(result))
         goto unregisterFilter_failed;
@@ -326,7 +331,7 @@ unregisterFilter_failed:
     if (filterMapper)
         filterMapper->Release();
 
-    CoUninitialize();
+    if (requiresUninit) CoUninitialize(); // FIX 21.2: Safe teardown (identical to 21.1)
     AkLogInfo("Result: %s", stringFromResult(result).c_str());
 }
 

@@ -114,11 +114,15 @@ CAPI_EXPORT void vcam_id(char *id, size_t *id_len)
 
     // Set the buffer size in buffer_size if not null
     if (id_len != nullptr) {
+        size_t in_size =*id_len; //FIXNO25.1 - Cache the actual limit (add line)
         *id_len = len;
 
         // Copy COMMONS_APPNAME to id if id is not null
-        if (id != nullptr)
-            std::copy_n(COMMONS_APPNAME, len, id);
+        if (id != nullptr && in_size >0){
+            size_t copySize = std::min<size_t>(len-1, in_size-1); //FIXNO25.1 add line
+            std::copy_n(COMMONS_APPNAME, copySize, id); //FIXNO25.1 - changed to copySize
+            id[copySize] = '\0'; //FIXNO25.1 Ends add line
+        }
     }
 }
 
@@ -161,57 +165,59 @@ CAPI_EXPORT void vcam_system_api(void *vcam,
     auto vcamApi = reinterpret_cast<VCamAPI *>(vcam);
 
     auto apiName = vcamApi->m_bridge.systemAPI();
+    //FIXNO1.1
+    size_t in_size = *api_name_len; // Cache the limit
     *api_name_len = apiName.size() + 1;
 
-    if (api_name)
-        snprintf(api_name, *api_name_len, "%s", apiName.c_str());
+    if (api_name && in_size > 0) // Check limit and zero-byte
+        snprintf(api_name, in_size, "%s", apiName.c_str()); // FIXNO1.1 ends
 }
 
 CAPI_EXPORT int vcam_devices(void *vcam, char *devs, size_t *buffer_size)
 {
-    // Validate buffer_size
+    // 1. Validate the pointer
     if (!buffer_size)
         return -EINVAL;
 
-    // Cast vcam to VCamAPI
-    auto vcamApi = reinterpret_cast<VCamAPI *>(vcam);
+    // 2. CACHE the input capacity immediately
+    size_t in_size = *buffer_size; //(FIXNO1.2 Starts - 1 line here)
 
+    auto vcamApi = reinterpret_cast<VCamAPI *>(vcam);
     if (!vcamApi)
         return -EINVAL;
 
-    // Get devices from the bridge
     auto devices = vcamApi->m_bridge.devices();
 
-    // Calculate required buffer size
-    size_t totalSize = 1; // Final \x0
-
+    // 3. Calculate the required total size
+    size_t totalSize = 1; // For the final null terminator
     for (const auto &device : devices)
-        totalSize += device.size() + 1; // String + \x0 separator
+        totalSize += device.size() + 1; // String length + null separator
 
+    // 4. Update the output size to tell the caller what we need
     *buffer_size = totalSize;
 
-    // Return device count if devs is null, or if no devices
-    if (!devs || devices.empty())
+    // 5. If devs is null, the caller just wants the size/count. 
+    // Or if in_size is 0, we can't write anything.
+    if (!devs || devices.empty() || in_size == 0) //FIXNO1.2 add in_size==0
         return static_cast<int>(devices.size());
 
-    // Copy devices to buffer
     size_t offset = 0;
     size_t devicesToCopy = 0;
 
     for (const auto &device: devices) {
-        // Ensure we don't write past the provided buffer_size
-        if (offset + device.size() + 1 > *buffer_size)
+        // Guard string length AND the final double-null list terminator
+        if (offset + device.size() + 2 > in_size) //FIXNO1 modified.1 - 2 instead of 1
             break;
 
         std::memcpy(devs + offset, device.c_str(), device.size());
         offset += device.size();
-        devs[offset++] = '\x0'; // Add null terminator after each string
+        devs[offset++] = '\0'; // Add null separator
         devicesToCopy++;
     }
 
-    // Add final \x0 terminator
-    devs[offset] = '\x0';
-
+    // 7. Add the final double-null terminator if there is space
+    if (offset < in_size) devs[offset] = '\0';
+    //FIXNO1.2 Ends here, added if condition for devs[offset] ='\0'
     return static_cast<int>(devicesToCopy);
 }
 
@@ -280,9 +286,12 @@ CAPI_EXPORT int vcam_add_device(void *vcam,
             generatedId = vcamApi->m_bridge.addDevice(description);
     }
 
+    //FIXNO3 Starts
     // Copy generated ID to output buffer with null termination
-    std::copy_n(generatedId.c_str(), buffer_size - 1, device_id);
-    device_id[buffer_size - 1] = '\0';
+    size_t copySize = std::min<size_t>(generatedId.size(), buffer_size - 1);
+    std::copy_n(generatedId.c_str(), copySize, device_id);
+    device_id[copySize] = '\0';
+    //FIXNO3 Ends
 
     return 0; // Success
 }
@@ -371,14 +380,16 @@ CAPI_EXPORT int vcam_description(void *vcam,
 
     // Get device description
     auto description = vcamApi->m_bridge.description(deviceIdStr);
+    //FIXNO1.3 Starts
+    size_t in_size= *buffer_size;
     *buffer_size = description.size() + 1; // Include null terminator
 
     // Return 0 if device_description is null
-    if (!device_description)
+    if (!device_description || in_size ==0)
         return 0;
 
     // Copy description to buffer
-    size_t copySize = std::min<size_t>(description.size(), *buffer_size - 1);
+    size_t copySize = std::min<size_t>(description.size(), in_size - 1);
     std::memcpy(device_description, description.c_str(), copySize);
     device_description[copySize] = '\x0';
 
@@ -511,10 +522,11 @@ CAPI_EXPORT int vcam_supported_input_formats(void *vcam,
     for (const auto &format: formatStrings)
         totalSize += format.size() + 1; // String + \x0 separator
 
+    size_t in_size = *buffer_size; //FIXNO1.4.1 Starts
     *buffer_size = totalSize;
 
     // Return format count if formats is null, or if no formats
-    if (!formats || formatStrings.empty())
+    if (!formats || formatStrings.empty() || in_size == 0) //FIXNO1.4.1 added in_size
         return static_cast<int>(formatStrings.size());
 
     // Copy formats to buffer
@@ -523,7 +535,7 @@ CAPI_EXPORT int vcam_supported_input_formats(void *vcam,
 
     for (const auto &format: formatStrings) {
         // Ensure we don't write past the provided buffer_size
-        if (offset + format.size() + 1 > *buffer_size)
+        if (offset + format.size() + 2 > in_size) //FIXNO1.4.1 ends (modified1.2 instead of 1, use 2)
             break;
 
         std::memcpy(formats + offset, format.c_str(), format.size());
@@ -533,7 +545,7 @@ CAPI_EXPORT int vcam_supported_input_formats(void *vcam,
     }
 
     // Add final \x0 terminator
-    formats[offset] = '\x0';
+    if (offset < in_size) formats[offset] = '\x0'; //FINXNO-undefined1-1, later added
 
     return static_cast<int>(formatsToCopy);
 }
@@ -566,10 +578,11 @@ CAPI_EXPORT int vcam_supported_output_formats(void *vcam,
     for (const auto &format: formatStrings)
         totalSize += format.size() + 1; // String + \x0 separator
 
+    size_t in_size = *buffer_size; //FIXNO1.4.2 Starts (identical to 1.4.1)
     *buffer_size = totalSize;
 
     // Return format count if formats is null, or if no formats
-    if (!formats || formatStrings.empty())
+    if (!formats || formatStrings.empty() || in_size == 0) //FIXNO1.4.2 added in_size
         return static_cast<int>(formatStrings.size());
 
     // Copy formats to buffer
@@ -578,7 +591,7 @@ CAPI_EXPORT int vcam_supported_output_formats(void *vcam,
 
     for (const auto &format: formatStrings) {
         // Ensure we don't write past the provided buffer_size
-        if (offset + format.size() + 1 > *buffer_size)
+        if (offset + format.size() + 2 > in_size) //FIXNO1.4.2 Ends (modified1.3, instead of 1 use 2)
             break;
 
         std::memcpy(formats + offset, format.c_str(), format.size());
@@ -588,7 +601,7 @@ CAPI_EXPORT int vcam_supported_output_formats(void *vcam,
     }
 
     // Add final \x0 terminator
-    formats[offset] = '\x0';
+    if (offset < in_size) formats[offset] = '\x0'; //FINXNO-undefined1-2 , later added
 
     return static_cast<int>(formatsToCopy);
 }
@@ -611,14 +624,15 @@ CAPI_EXPORT int vcam_default_input_format(void *vcam,
     auto defaultFormat =
             vcamApi->m_bridge.defaultPixelFormat(AkVCam::IpcBridge::StreamType_Input);
     auto formatString = AkVCam::pixelFormatToCommonString(defaultFormat);
+    size_t in_size = *buffer_size; //FIXNO1.5.2 Starts
     *buffer_size = formatString.size() + 1; // Include null terminator
 
     // Return 0 if format is null
-    if (!format)
+    if (!format || in_size == 0) //FIXNO1.5 added insize condition
         return 0;
 
     // Copy format to buffer
-    size_t copySize = std::min<size_t>(formatString.size(), *buffer_size - 1);
+    size_t copySize = std::min<size_t>(formatString.size(), in_size - 1); //FIXNO1.5 Ends
     std::memcpy(format, formatString.c_str(), copySize);
     format[copySize] = '\x0';
 
@@ -643,14 +657,15 @@ CAPI_EXPORT int vcam_default_output_format(void *vcam,
     auto defaultFormat =
             vcamApi->m_bridge.defaultPixelFormat(AkVCam::IpcBridge::StreamType_Output);
     auto formatString = AkVCam::pixelFormatToCommonString(defaultFormat);
+    size_t in_size = *buffer_size; //FIXNO1.5.2 Starts
     *buffer_size = formatString.size() + 1; // Include null terminator
 
     // Return 0 if format is null
-    if (!format)
+    if (!format || in_size ==0) //FIXNO1.5.2 added in_size
         return 0;
 
     // Copy format to buffer
-    size_t copySize = std::min<size_t>(formatString.size(), *buffer_size - 1);
+    size_t copySize = std::min<size_t>(formatString.size(), in_size - 1); //FIXNO1.5.2 ends
     std::memcpy(format, formatString.c_str(), copySize);
     format[copySize] = '\x0';
 
@@ -711,12 +726,13 @@ CAPI_EXPORT int vcam_format(void *vcam,
     auto formatString =
             AkVCam::pixelFormatToCommonString(selectedFormat.format());
 
+    size_t in_size = format_bfsz ? *format_bfsz : 0; //FIXNO1.7 Cache the input limit
     if (format_bfsz)
         *format_bfsz = formatString.size() + 1; // Include null terminator
 
     // Copy format string if not null
-    if (format && format_bfsz) {
-        size_t copySize = std::min<size_t>(formatString.size(), *format_bfsz - 1);
+    if (format && in_size > 0) {
+        size_t copySize = std::min<size_t>(formatString.size(), in_size - 1); //FIXNO1.7 Ends
         std::memcpy(format, formatString.c_str(), copySize);
         format[copySize] = '\x0';
     }
@@ -1023,12 +1039,16 @@ CAPI_EXPORT int vcam_stream_send(void *vcam,
 
         size_t bytesPerLine = frame.lineSize(plane);
         size_t copySize = std::min<size_t>(bytesPerLine, line_size[plane]);
-
-        for (int y = 0; y < height; ++y) {
-            auto line = frame.line(plane, y);
-            auto srcLine = data[plane] + y * line_size[plane];
+        //FIXNO4 Starts
+        size_t hDiv = frame.heightDiv(plane); //Get subsampling division
+        int maxY = height >> hDiv; //Calculate real rows for this plane
+        for (int y = 0; y < maxY; ++y) {
+            //Use plane pointer + offset to aviod double-division in frame.line()
+            auto line = frame.plane(plane) + (size_t)y * bytesPerLine;
+            auto srcLine = data[plane] + (size_t)y * line_size[plane];
             std::memcpy(line, srcLine, copySize);
         }
+        //FIXNO4 Ends
     }
 
     // Write frame to device
@@ -1129,35 +1149,38 @@ CAPI_EXPORT int vcam_control(void *vcam,
     const auto &selectedControl = controlList[index];
 
     // Handle name and name_bfsz
+    size_t in_name_size = name_bfsz ? *name_bfsz : 0; // Cache the physical limit
     if (name_bfsz) {
-        *name_bfsz = selectedControl.id.size() + 1; // Include null terminator
-
-        if (name && *name_bfsz) {
-            std::copy_n(selectedControl.id.c_str(), *name_bfsz, name);
-            name[*name_bfsz - 1] = '\x0';
-        }
+        *name_bfsz = selectedControl.id.size() + 1; // Inform caller of required size
+    }
+    if (name && in_name_size > 0) {
+        size_t copySize = std::min<size_t>(selectedControl.id.size(), in_name_size - 1);
+        std::copy_n(selectedControl.id.c_str(), copySize, name);
+        name[copySize] = '\x0';
     }
 
     // Handle description and description_bfsz
+    size_t in_desc_size = description_bfsz ? *description_bfsz : 0; // Cache the physical limit
     if (description_bfsz) {
-        *description_bfsz = selectedControl.description.size() + 1; // Include null terminator
-
-        if (description && *description_bfsz) {
-            std::copy_n(selectedControl.description.c_str(), *description_bfsz, description);
-            description[*description_bfsz - 1] = '\x0';
-        }
+        *description_bfsz = selectedControl.description.size() + 1; 
+    }
+    if (description && in_desc_size > 0) {
+        size_t copySize = std::min<size_t>(selectedControl.description.size(), in_desc_size - 1);
+        std::copy_n(selectedControl.description.c_str(), copySize, description);
+        description[copySize] = '\x0';
     }
 
     // Handle type and type_bfsz
     auto typeString = ControlTypeStr::toString(selectedControl.type);
-
+    size_t in_type_size = type_bfsz ? *type_bfsz : 0; // Cache the physical limit
     if (type_bfsz) {
-        *type_bfsz = typeString ? strlen(typeString) + 1 : 1; // Include null terminator
-
-        if (type && *type_bfsz) {
-            std::copy_n(typeString? typeString: "", *type_bfsz, type);
-            type[*type_bfsz - 1] = '\x0';
-        }
+        *type_bfsz = typeString ? strlen(typeString) + 1 : 1; 
+    }
+    if (type && in_type_size > 0) {
+        size_t strLen = typeString ? strlen(typeString) : 0;
+        size_t copySize = std::min<size_t>(strLen, in_type_size - 1);
+        std::copy_n(typeString ? typeString : "", copySize, type);
+        type[copySize] = '\x0';
     }
 
     // Copy numeric values
@@ -1176,6 +1199,7 @@ CAPI_EXPORT int vcam_control(void *vcam,
     if (default_value)
         *default_value = selectedControl.defaultValue;
 
+    size_t in_menu_size = menu_bfsz ? *menu_bfsz : 0; // Cache at top of function (FIXNO2 Starts)
     // Handle menu
     if (menu_bfsz) {
         size_t requiredSize = 1; // Final null terminator
@@ -1189,17 +1213,16 @@ CAPI_EXPORT int vcam_control(void *vcam,
             size_t offset = 0;
 
             for (const auto &item: selectedControl.menu) {
-                size_t copySize = std::min<size_t>(item.size(), *menu_bfsz - offset - 1);
-
-                if (copySize == 0)
-                    break;
+                if (offset + 2 >= in_menu_size) break; // PREVENT UNDERFLOW - FIXNO2 (addition of this line) (modified1.4; 2 instead of 1)
+                size_t copySize = std::min<size_t>(item.size(), in_menu_size - offset - 2); //FIXNO2 ends (modified1.4; 2 instead of 1)
 
                 std::copy_n(item.c_str(), copySize, menu + offset);
                 offset += copySize;
                 menu[offset++] = '\x0';
             }
 
-            menu[offset] = '\x0'; // Final null terminator
+            //Final Null terminator
+            if (offset < in_menu_size) menu[offset] = '\x0'; // FINXNO-undefined1-3, later added 
         }
     }
 
@@ -1253,12 +1276,14 @@ CAPI_EXPORT int vcam_picture(void *vcam, char *file_path, size_t *buffer_size)
 
     // Get picture file path
     auto picturePath = vcamApi->m_bridge.picture();
+    size_t in_size = *buffer_size; //FIXNO1.6 Starts
     *buffer_size = picturePath.size() + 1; // Include null terminator
 
     // Copy path if buffer is provided
-    if (file_path && *buffer_size) {
-        std::copy_n(picturePath.c_str(), *buffer_size, file_path);
-        file_path[*buffer_size - 1] = '\x0';
+    if (file_path && in_size > 0) {
+        size_t copySize = std::min<size_t>(picturePath.size(), in_size - 1); //FIXNO1.6 main addition
+        std::copy_n(picturePath.c_str(), copySize, file_path); //FIXNO1.6 ends
+        file_path[copySize] = '\x0';
     }
 
     return 0;
@@ -1478,12 +1503,14 @@ CAPI_EXPORT int vcam_client_path(void *vcam,
     if (clientPath.empty())
         return -EINVAL;
 
+    size_t in_size = *buffer_size; //FIXNO25.2 Starts - Cache the actual limit
+
     // Set required buffer size
     *buffer_size = clientPath.size() + 1; // Include null terminator
 
     // Copy path if buffer is provided
-    if (path && *buffer_size) {
-        size_t copySize = std::min<size_t>(clientPath.size(), *buffer_size - 1);
+    if (path && in_size>0) { //FIXNO25.2 - changed to in_size>0
+        size_t copySize = std::min<size_t>(clientPath.size(), in_size - 1); //FIXNO25.2 Ends, changed to in_size
         std::copy_n(clientPath.c_str(), copySize, path);
         path[copySize] = '\x0';
 

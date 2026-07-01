@@ -78,11 +78,11 @@ STDAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, LPVOID *ppv)
     return hr;
 }
 
+extern std::atomic<uint64_t> g_activeInstances; // FIXNO20.2: Import tracker from basefilter.cpp
 STDAPI DllCanUnloadNow()
 {
     AkLogFunction();
-
-    return AkVCam::ClassFactory::locked()? S_FALSE: S_OK;
+    return (g_activeInstances > 0 || AkVCam::ClassFactory::locked()) ? S_FALSE : S_OK;
 }
 
 STDAPI DllRegisterServer()

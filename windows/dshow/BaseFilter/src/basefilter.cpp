@@ -36,6 +36,8 @@
 
 #define TIME_BASE 1.0e7
 
+std::atomic<uint64_t> g_activeInstances {0}; // FIXNO20.1: Global instance tracker
+
 namespace AkVCam
 {
     class ProcAmpPrivate
@@ -113,6 +115,7 @@ BOOL CALLBACK AkVCamEnumWindowsProc(HWND handler, LPARAM userData);
 
 AkVCam::BaseFilter::BaseFilter(const GUID &clsid)
 {
+    g_activeInstances++; // FIXNO20.1: Increment (addition of this line)
     this->d = new BaseFilterPrivate(this);
     this->d->m_clsid = clsid;
     auto camera = Preferences::cameraFromCLSID(clsid);
@@ -138,6 +141,7 @@ AkVCam::BaseFilter::BaseFilter(const GUID &clsid)
 
 AkVCam::BaseFilter::~BaseFilter()
 {
+    g_activeInstances--; // FIXNO20.1: Decrement (addition of this line)
     AkLogFunction();
 
     if (this->d->m_clock)
@@ -673,11 +677,11 @@ HRESULT AkVCam::BaseFilter::QueryFilterInfo(FILTER_INFO *pInfo)
 
     if (!this->d->m_filterName.empty()) {
         auto filterName = wstrFromString(this->d->m_filterName);
+        size_t len= wcsnlen(filterName, MAX_FILTER_NAME - 1); //FINXNO23.1 start
         memcpy(pInfo->achName,
                filterName,
-               (std::min<size_t>)(wcsnlen(filterName, MAX_FILTER_NAME)
-                                  * sizeof(WCHAR),
-                                  MAX_FILTER_NAME));
+               len * sizeof(WCHAR));//FIXNO23.1 change this line
+        pInfo->achName[len] = L'\0';//FIXNO23.1 Ends ---- (add this line)
         CoTaskMemFree(filterName);
     }
 

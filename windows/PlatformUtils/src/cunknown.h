@@ -48,37 +48,9 @@ namespace AkVCam
                 return static_cast<uint64_t>(this->m_refCount);
             }
 
-            // IUnknown
-
-            HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppv) override
-            {
-                AkLogFunction();
-                AkLogDebug("IID: %s", stringFromClsid(riid).c_str());
-
-                if (!ppv)
-                    return E_POINTER;
-
-                size_t n = 0;
-                auto map = comEntriesMap(n);
-
-                for (size_t i = 0; i < n; ++i)
-                    if (*map[i].iid == riid) {
-                        *ppv = map[i].ptr;
-                        AddRef();
-
-                        return S_OK;
-                    }
-
-                *ppv = nullptr;
-                AkLogDebug("Interface not found");
-
-                return E_NOINTERFACE;
-            }
-
             ULONG STDMETHODCALLTYPE AddRef() override
             {
                 AkLogFunction();
-
                 return ++this->m_refCount;
             }
 
@@ -95,16 +67,23 @@ namespace AkVCam
 
         private:
             std::atomic<uint64_t> m_refCount {1};
-
-        protected:
-            virtual const ComInterfaceEntry *comEntriesMap(size_t &count) = 0;
    };
 }
 
+// -------------------------------------------------------------------------
+// Safe COM Map: Allocates the array locally on the stack to prevent dangling 
+// pointers, but keeps the original COM_INTERFACE syntax for compatibility 
+// with pin.cpp and basefilter.cpp.
+// -------------------------------------------------------------------------
+
 #define BEGIN_COM_MAP(object) \
-    const AkVCam::ComInterfaceEntry *comEntriesMap(size_t &count) override \
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppv) override \
     { \
-        static const AkVCam::ComInterfaceEntry comInterfaceEntry##object[] = {
+        AkLogFunction(); \
+        AkLogDebug("IID: %s", stringFromClsid(riid).c_str()); \
+        if (!ppv) return E_POINTER; \
+        *ppv = nullptr; \
+        const AkVCam::ComInterfaceEntry entries[] = {
 
 #define COM_INTERFACE(interface) \
             {&IID_##interface, static_cast<interface *>(this)},
@@ -112,14 +91,21 @@ namespace AkVCam
 #define COM_INTERFACE2(interface, base) \
             {&IID_##interface, static_cast<interface *>(static_cast<base *>(this))},
 
+// CRITICAL FIX: Restored to prevent buffer overruns in pin.cpp and basefilter.cpp loops
 #define COM_INTERFACE_NULL {&IID_NULL, nullptr},
 
 #define END_COM_MAP(object) \
-            {&IID_IUnknown, static_cast<IUnknown *>(this)}, \
-    }; \
-    count = sizeof(comInterfaceEntry##object) / sizeof(comInterfaceEntry##object[0]); \
-    \
-    return comInterfaceEntry##object; \
-}
+            {&IID_IUnknown, static_cast<IUnknown *>(this)} \
+        }; \
+        for (const auto& entry : entries) { \
+            if (*entry.iid == riid) { \
+                *ppv = entry.ptr; \
+                AddRef(); \
+                return S_OK; \
+            } \
+        } \
+        AkLogDebug("Interface not found"); \
+        return E_NOINTERFACE; \
+    }
 
 #endif // CUNKNOWN_H

@@ -210,8 +210,8 @@ HRESULT AkVCam::Pin::stop()
     if (this->d->m_bridge)
         this->d->m_bridge->deviceStop(this->d->m_deviceId);
 
-    this->d->m_timer.stop();
-    this->d->m_memAllocator->Decommit();
+    this->d->m_memAllocator->Decommit(); //FIXNO17 : 1st line (replaced with line below)
+    this->d->m_timer.stop(); //FIXNO17 : 2nd line (replaced with line above)
     std::lock_guard<std::mutex> lock(this->d->m_mutex);
     this->d->m_currentFrame = {};
 
@@ -362,6 +362,7 @@ void AkVCam::Pin::setPicture(const std::string &picture)
 void AkVCam::Pin::setControls(const std::map<std::string, int> &controls)
 {
     AkLogFunction();
+    std::lock_guard<std::mutex> lock(this->d->m_mutex); // FIXNO18.1
 
     if (this->d->m_directMode)
         return;
@@ -997,11 +998,11 @@ HRESULT AkVCam::Pin::QueryPinInfo(PIN_INFO *pInfo)
 
     if (!this->d->m_pinName.empty()) {
         auto pinName = wstrFromString(this->d->m_pinName);
+        size_t len = wcsnlen(pinName, MAX_PIN_NAME - 1);//FIXNO23.2 Starts (add this line)
         memcpy(pInfo->achName,
                pinName,
-               (std::min<size_t>)(wcsnlen(pinName, MAX_PIN_NAME)
-                                  * sizeof(WCHAR),
-                                  MAX_PIN_NAME));
+               len * sizeof(WCHAR)); //FIXNO23.2 Change this line
+        pInfo->achName[len] = L'\0'; //FIXNO23.2 Ends ------ (add this line)
         CoTaskMemFree(pinName);
     }
 
@@ -1154,33 +1155,55 @@ void AkVCam::PinPrivate::sendFrame(void *userData)
         return;
     }
 
-    {
+    { //FIXNO24 modified starts
         std::lock_guard<std::mutex> lock(self->m_mutex);
 
-        if (self->m_frameReady && self->m_currentFrame.size() > 0) {
-            if (self->m_isRgb) {
-                auto line = pData;
-                auto lineSize = self->m_currentFrame.lineSize(0);
-                auto height = self->m_currentFrame.format().height();
+        // Optimization: Prevent heavy CPU allocation by pointing to the correct frame
+        VideoFrame randomFrm;
+        const VideoFrame* frameToRender = &self->m_currentFrame;
 
-                for (int y = 0; y < height; ++y) {
-                    memcpy(line, self->m_currentFrame.constLine(0, height - y - 1), lineSize);
-                    line += lineSize;
-                }
-            } else {
-                auto copyBytes = std::min(size_t(size), self->m_currentFrame.size());
+        if (!self->m_frameReady || self->m_currentFrame.size() == 0) {
+            randomFrm = self->randomFrame();
+            frameToRender = &randomFrm;
+        }
 
-                if (copyBytes > 0)
-                    memcpy(pData, self->m_currentFrame.constData(), copyBytes);
+        if (self->m_isRgb) {
+            auto dstLine = pData;
+            size_t bytesUsed = frameToRender->bytesUsed(0);
+            size_t dstStride = (bytesUsed + 3) & ~3; // Strict DShow DWORD alignment
+            size_t lineSize = frameToRender->lineSize(0);
+            int height = frameToRender->format().height();
+
+            for (int y = 0; y < height; ++y) {
+                // Buffer overflow protection against faulty host apps
+                if (dstLine + bytesUsed > pData + size) break; 
+                
+                // DShow RGB is bottom-up. Use raw plane pointer math.
+                const uint8_t* srcLine = frameToRender->constPlane(0) + (size_t)(height - y - 1) * lineSize;
+                memcpy(dstLine, srcLine, bytesUsed);
+                dstLine += dstStride;
             }
         } else {
-            auto frame = self->randomFrame();
-            auto copyBytes = std::min(size_t(size), frame.size());
+            auto dstLine = pData;
+            for (size_t plane = 0; plane < frameToRender->planes(); ++plane) {
+                size_t bytesUsed = frameToRender->bytesUsed(plane);
+                size_t lineSize = frameToRender->lineSize(plane);
+                int planeHeight = frameToRender->format().height() >> frameToRender->heightDiv(plane);
 
-            if (copyBytes > 0)
-                memcpy(pData, frame.constData(), copyBytes);
+                // YUY2/UYVY (1 plane) requires DWORD alignment. NV12 (2 planes) is tightly packed.
+                size_t dstStride = (frameToRender->planes() == 1) ? ((bytesUsed + 3) & ~3) : bytesUsed;
+
+                const uint8_t *srcPlane = frameToRender->constPlane(plane);
+                for (int y = 0; y < planeHeight; ++y) {
+                    if (dstLine + bytesUsed > pData + size) break;
+                    
+                    // Bypass constLine() to completely eliminate the NV12 double-division bug
+                    memcpy(dstLine, srcPlane + (size_t)y * lineSize, bytesUsed);
+                    dstLine += dstStride;
+                }
+            }
         }
-    }
+    } //FINXNO24 modified Ends
 
     auto format = formatFromMediaType(self->m_mediaType);
     auto fps = format.fps();
@@ -1244,6 +1267,7 @@ void AkVCam::PinPrivate::propertyChanged(void *userData,
     AkLogFunction();
     UNUSED(flags);
     auto self = reinterpret_cast<PinPrivate *>(userData);
+    std::lock_guard<std::mutex> lock(self->m_mutex); // FIXNO18.2
 
     switch (property) {
     case VideoProcAmp_Brightness:
@@ -1292,8 +1316,11 @@ AkVCam::VideoFrame AkVCam::PinPrivate::randomFrame()
     auto format = formatFromMediaType(this->m_mediaType);
 
     VideoFrame frame(format);
-    static std::uniform_int_distribution<int> distribution(0, 255);
-    static std::default_random_engine engine;
+    
+    // FIXNO28: Thread-safe, properly seeded RNG to prevent multi-camera crashes
+    thread_local std::default_random_engine engine(std::random_device{}());
+    thread_local std::uniform_int_distribution<int> distribution(0, 255);
+    
     std::generate(frame.data(),
                   frame.data() + frame.size(),
                   [] () {
