@@ -18,6 +18,7 @@
  */
 
 #include "sockets.h"
+#include "logger.h"
 
 #ifdef _WIN32
 static bool akvcamSocketsInitialized = false;
