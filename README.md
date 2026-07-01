@@ -33,3 +33,4 @@ If you are interested in donating to the project you can look at all available m
 ## Reporting Bugs
 
 Report all issues in the [issues tracker](https://github.com/webcamoid/akvirtualcamera/issues).
+
