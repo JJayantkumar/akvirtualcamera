@@ -114,7 +114,7 @@ CAPI_EXPORT void vcam_id(char *id, size_t *id_len)
 
     // Set the buffer size in buffer_size if not null
     if (id_len != nullptr) {
-        size_t in_size =*id_len; //FIXNO25.1 - Cache the actual limit (add line)
+        size_t in_size = id ? *id_len : 0; //FIXNO25.1 - Cache the actual limit (add line)
         *id_len = len;
 
         // Copy COMMONS_APPNAME to id if id is not null
@@ -164,9 +164,12 @@ CAPI_EXPORT void vcam_system_api(void *vcam,
     // Cast vcam to VCamAPI
     auto vcamApi = reinterpret_cast<VCamAPI *>(vcam);
 
+    if (!vcamApi)
+        return;
+
     auto apiName = vcamApi->m_bridge.systemAPI();
     //FIXNO1.1
-    size_t in_size = *api_name_len; // Cache the limit
+    size_t in_size = api_name ? *api_name_len : 0; // Cache the limit
     *api_name_len = apiName.size() + 1;
 
     if (api_name && in_size > 0) // Check limit and zero-byte
@@ -180,7 +183,7 @@ CAPI_EXPORT int vcam_devices(void *vcam, char *devs, size_t *buffer_size)
         return -EINVAL;
 
     // 2. CACHE the input capacity immediately
-    size_t in_size = *buffer_size; //(FIXNO1.2 Starts - 1 line here)
+    size_t in_size = devs ? *buffer_size : 0; //(FIXNO1.2 Starts - 1 line here)
 
     auto vcamApi = reinterpret_cast<VCamAPI *>(vcam);
     if (!vcamApi)
@@ -381,7 +384,7 @@ CAPI_EXPORT int vcam_description(void *vcam,
     // Get device description
     auto description = vcamApi->m_bridge.description(deviceIdStr);
     //FIXNO1.3 Starts
-    size_t in_size= *buffer_size;
+    size_t in_size = device_description ? *buffer_size : 0;
     *buffer_size = description.size() + 1; // Include null terminator
 
     // Return 0 if device_description is null
@@ -522,7 +525,7 @@ CAPI_EXPORT int vcam_supported_input_formats(void *vcam,
     for (const auto &format: formatStrings)
         totalSize += format.size() + 1; // String + \x0 separator
 
-    size_t in_size = *buffer_size; //FIXNO1.4.1 Starts
+    size_t in_size = formats ? *buffer_size : 0; //FIXNO1.4.1 Starts
     *buffer_size = totalSize;
 
     // Return format count if formats is null, or if no formats
@@ -578,7 +581,7 @@ CAPI_EXPORT int vcam_supported_output_formats(void *vcam,
     for (const auto &format: formatStrings)
         totalSize += format.size() + 1; // String + \x0 separator
 
-    size_t in_size = *buffer_size; //FIXNO1.4.2 Starts (identical to 1.4.1)
+    size_t in_size = formats ? *buffer_size : 0; //FIXNO1.4.2 Starts (identical to 1.4.1)
     *buffer_size = totalSize;
 
     // Return format count if formats is null, or if no formats
@@ -624,7 +627,7 @@ CAPI_EXPORT int vcam_default_input_format(void *vcam,
     auto defaultFormat =
             vcamApi->m_bridge.defaultPixelFormat(AkVCam::IpcBridge::StreamType_Input);
     auto formatString = AkVCam::pixelFormatToCommonString(defaultFormat);
-    size_t in_size = *buffer_size; //FIXNO1.5.2 Starts
+    size_t in_size = format ? *buffer_size : 0; //FIXNO1.5.2 Starts
     *buffer_size = formatString.size() + 1; // Include null terminator
 
     // Return 0 if format is null
@@ -657,7 +660,7 @@ CAPI_EXPORT int vcam_default_output_format(void *vcam,
     auto defaultFormat =
             vcamApi->m_bridge.defaultPixelFormat(AkVCam::IpcBridge::StreamType_Output);
     auto formatString = AkVCam::pixelFormatToCommonString(defaultFormat);
-    size_t in_size = *buffer_size; //FIXNO1.5.2 Starts
+    size_t in_size = format ? *buffer_size : 0; //FIXNO1.5.2 Starts
     *buffer_size = formatString.size() + 1; // Include null terminator
 
     // Return 0 if format is null
@@ -726,7 +729,7 @@ CAPI_EXPORT int vcam_format(void *vcam,
     auto formatString =
             AkVCam::pixelFormatToCommonString(selectedFormat.format());
 
-    size_t in_size = format_bfsz ? *format_bfsz : 0; //FIXNO1.7 Cache the input limit
+    size_t in_size = (format && format_bfsz) ? *format_bfsz : 0; //FIXNO1.7 Cache the input limit
     if (format_bfsz)
         *format_bfsz = formatString.size() + 1; // Include null terminator
 
@@ -972,7 +975,7 @@ CAPI_EXPORT int vcam_stream_start(void *vcam, const char *device_id)
     // Validate vcam
     auto vcamApi = reinterpret_cast<VCamAPI *>(vcam);
 
-    if (!vcamApi)
+    if (!vcamApi || !device_id) //FIXNOCodex1
         return -EINVAL;
 
     // Start device stream
@@ -1062,7 +1065,7 @@ CAPI_EXPORT int vcam_stream_stop(void *vcam, const char *device_id)
     // Validate vcam
     auto vcamApi = reinterpret_cast<VCamAPI *>(vcam);
 
-    if (!vcamApi)
+    if (!vcamApi || !device_id) //FIXNOCodex1
         return -EINVAL;
 
      // Stop device stream
@@ -1149,7 +1152,7 @@ CAPI_EXPORT int vcam_control(void *vcam,
     const auto &selectedControl = controlList[index];
 
     // Handle name and name_bfsz
-    size_t in_name_size = name_bfsz ? *name_bfsz : 0; // Cache the physical limit
+    size_t in_name_size = (name && name_bfsz) ? *name_bfsz : 0; // Cache the physical limit
     if (name_bfsz) {
         *name_bfsz = selectedControl.id.size() + 1; // Inform caller of required size
     }
@@ -1160,7 +1163,7 @@ CAPI_EXPORT int vcam_control(void *vcam,
     }
 
     // Handle description and description_bfsz
-    size_t in_desc_size = description_bfsz ? *description_bfsz : 0; // Cache the physical limit
+    size_t in_desc_size = (description && description_bfsz) ? *description_bfsz : 0; // Cache the physical limit
     if (description_bfsz) {
         *description_bfsz = selectedControl.description.size() + 1; 
     }
@@ -1172,7 +1175,7 @@ CAPI_EXPORT int vcam_control(void *vcam,
 
     // Handle type and type_bfsz
     auto typeString = ControlTypeStr::toString(selectedControl.type);
-    size_t in_type_size = type_bfsz ? *type_bfsz : 0; // Cache the physical limit
+    size_t in_type_size = (type && type_bfsz) ? *type_bfsz : 0; // Cache the physical limit
     if (type_bfsz) {
         *type_bfsz = typeString ? strlen(typeString) + 1 : 1; 
     }
@@ -1199,7 +1202,7 @@ CAPI_EXPORT int vcam_control(void *vcam,
     if (default_value)
         *default_value = selectedControl.defaultValue;
 
-    size_t in_menu_size = menu_bfsz ? *menu_bfsz : 0; // Cache at top of function (FIXNO2 Starts)
+    size_t in_menu_size = (menu && menu_bfsz) ? *menu_bfsz : 0; // Cache at top of function (FIXNO2 Starts)
     // Handle menu
     if (menu_bfsz) {
         size_t requiredSize = 1; // Final null terminator
@@ -1276,7 +1279,7 @@ CAPI_EXPORT int vcam_picture(void *vcam, char *file_path, size_t *buffer_size)
 
     // Get picture file path
     auto picturePath = vcamApi->m_bridge.picture();
-    size_t in_size = *buffer_size; //FIXNO1.6 Starts
+    size_t in_size = file_path ? *buffer_size : 0; //FIXNO1.6 Starts
     *buffer_size = picturePath.size() + 1; // Include null terminator
 
     // Copy path if buffer is provided
@@ -1503,7 +1506,7 @@ CAPI_EXPORT int vcam_client_path(void *vcam,
     if (clientPath.empty())
         return -EINVAL;
 
-    size_t in_size = *buffer_size; //FIXNO25.2 Starts - Cache the actual limit
+    size_t in_size = path ? *buffer_size : 0; //FIXNO25.2 Starts - Cache the actual limit
 
     // Set required buffer size
     *buffer_size = clientPath.size() + 1; // Include null terminator

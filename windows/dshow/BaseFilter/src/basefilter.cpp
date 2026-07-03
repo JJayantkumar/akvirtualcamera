@@ -18,6 +18,7 @@
  */
 
 #include <algorithm>
+#include <atomic>
 #include <cinttypes>
 #include <condition_variable>
 #include <thread>

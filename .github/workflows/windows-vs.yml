@@ -4,12 +4,12 @@ on: [push, pull_request]
 
 env:
   PYTHON_VERSION: 3.13
-  CMAKE_GENERATOR: Visual Studio 17 2022
+  CMAKE_GENERATOR: "Visual Studio 17 2022"
   NJOBS: 4
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: windows-2022
     defaults:
       run:
         shell: cmd

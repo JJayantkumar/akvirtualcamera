@@ -262,7 +262,26 @@ AkVCam::MsgClients::MsgClients(ClientType clientType):
     this->d = new MsgClientsPrivate;
     this->d->m_clientType = clientType;
 }
+//FIXNOCodex1 - constructors used by the Service.
+AkVCam::MsgClients::MsgClients(ClientType clientType,
+                               const std::vector<uint64_t> &clients):
+    MsgCommons()
+{
+    this->d = new MsgClientsPrivate;
+    this->d->m_clientType = clientType;
+    this->d->m_clients = clients;
+}
 
+AkVCam::MsgClients::MsgClients(ClientType clientType,
+                               const std::vector<uint64_t> &clients,
+                               uint64_t queryId):
+    MsgCommons(queryId)
+{
+    this->d = new MsgClientsPrivate;
+    this->d->m_clientType = clientType;
+    this->d->m_clients = clients;
+}
+//FIXNOCodex1 Ends
 AkVCam::MsgClients::MsgClients(const Message &message): //FIXNOpost2 Starts
     MsgCommons(message.queryId())
 {
@@ -460,16 +479,22 @@ AkVCam::MsgFrameReady::MsgFrameReady(const Message &message): //FIXNOpost2 Start
     memcpy(&dataSize, buffer + offset, sizeof(size_t));
     offset += sizeof(size_t);
 
+    //FIXNOCodex1 starts
     if (bufferSize - offset < sizeof(bool)) return;
-    if (bufferSize - offset - sizeof(bool) < dataSize) return;
     
+    size_t payloadSize = bufferSize - offset - sizeof(bool);
+    if (payloadSize != dataSize) return;
+
     if (dataSize > 0) {
-        this->d->m_frame = VideoFrame(VideoFormat(fourcc, width, height));
-        if (this->d->m_frame.size() > 0) {
-            memcpy(this->d->m_frame.data(), buffer + offset, std::min(dataSize, this->d->m_frame.size()));
-        }
+        VideoFrame frame(VideoFormat(fourcc, width, height));
+
+        if (dataSize != frame.size()) return;
+
+        this->d->m_frame = frame;
+        memcpy(this->d->m_frame.data(), buffer + offset, dataSize);
         offset += dataSize;
     }
+    //FIXNOCodex1 ends
 
     memcpy(&this->d->m_isActive, buffer + offset, sizeof(bool));
 } //FIXNOpost2 Ends
@@ -680,14 +705,16 @@ AkVCam::MsgBroadcast::MsgBroadcast(const Message &message): //FIXNOpost2 Starts
     memcpy(&dataSize, buffer + offset, sizeof(size_t));
     offset += sizeof(size_t);
 
-    if (bufferSize - offset < dataSize) return;
-    
+    if (bufferSize - offset != dataSize) return; //FIXNOCodex1
+
     if (dataSize > 0) {
-        this->d->m_frame = VideoFrame(VideoFormat(fourcc, width, height));
-        if (this->d->m_frame.size() > 0) {
-            memcpy(this->d->m_frame.data(), buffer + offset, std::min(dataSize, this->d->m_frame.size()));
-        }
-    }
+        VideoFrame frame(VideoFormat(fourcc, width, height));
+
+        if (dataSize != frame.size()) return;
+
+        this->d->m_frame = frame;
+        memcpy(this->d->m_frame.data(), buffer + offset, dataSize);
+    } //FIXNOCodex1 ends
 }//FIXNOpost2 ends
 
 AkVCam::MsgBroadcast::~MsgBroadcast()

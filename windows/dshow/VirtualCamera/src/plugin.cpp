@@ -16,7 +16,8 @@
  *
  * Web-Site: http://webcamoid.github.io/
  */
-
+ 
+#include <atomic>
 #include "plugin.h"
 #include "plugininterface.h"
 #include "classfactory.h"

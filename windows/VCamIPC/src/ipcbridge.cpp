@@ -18,6 +18,7 @@
  */
 
 #include <algorithm>
+#include <cstddef>
 #include <condition_variable>
 #include <fstream>
 #include <thread>
@@ -577,10 +578,11 @@ void AkVCam::IpcBridge::deviceStop(const std::string &deviceId)
         AkLogDebug("Waiting for messageFuture for device: %s", deviceId.c_str());
         auto status = messageFuture.wait_for(std::chrono::seconds(5));
 
-        if (status == std::future_status::timeout)
+        if (status == std::future_status::timeout) { //FINXNOCodex1 - basic fix of if else block
             AkLogWarning("Timeout waiting for messageFuture in deviceStop for deviceId: %s", deviceId.c_str());
-        else
-            AkLogDebug("messageFuture completed for device: %s", deviceId.c_str());
+            return;
+        }
+        AkLogDebug("messageFuture completed for device: %s", deviceId.c_str());
     } else {
         AkLogWarning("Invalid messageFuture for device: %s", deviceId.c_str());
     }
@@ -951,7 +953,10 @@ bool AkVCam::IpcBridgePrivate::frameReady(const Message &message)
     auto &slot = this->m_broadcasts[deviceId];
     auto run = slot.run;
 
-    if (slot.sharedMemory.isOpen()) {
+    auto useSharedMemory = slot.sharedMemory.isOpen();
+    VideoFrame frameToEmit;
+
+    if (useSharedMemory) {
         auto sharedFrame =
                 reinterpret_cast<SharedFrame *>(slot.sharedMemory.lock());
 
@@ -965,8 +970,8 @@ bool AkVCam::IpcBridgePrivate::frameReady(const Message &message)
 
             auto dataSize =
                     std::min(slot.sharedMemory.pageSize()
-                             - offsetof(SharedFrame, data), //FIXNO6.2 (same as 6.1)
-                             slot.frame.size()); //This should be slot.; don't remove it, and in 6.1 it is removed.
+                             - offsetof(SharedFrame, data),
+                             slot.frame.size());
 
             if (dataSize > 0)
                 memcpy(slot.frame.data(), sharedFrame->data, dataSize);
@@ -975,22 +980,19 @@ bool AkVCam::IpcBridgePrivate::frameReady(const Message &message)
 
             slot.sharedMemory.unlock();
         }
+
+        frameToEmit = slot.frame;
+    } else {
+        frameToEmit = msgFrameReady.frame();
     }
 
     this->m_broadcastsMutex.unlock();
 
-    if (slot.sharedMemory.isOpen())
-        AKVCAM_EMIT(this->self,
-                    FrameReady,
-                    deviceId,
-                    slot.frame,
-                    msgFrameReady.isActive())
-    else
-        AKVCAM_EMIT(this->self,
-                    FrameReady,
-                    deviceId,
-                    msgFrameReady.frame(),
-                    msgFrameReady.isActive())
+    AKVCAM_EMIT(this->self,
+                FrameReady,
+                deviceId,
+                frameToEmit,
+                msgFrameReady.isActive())
 
     return run;
 }
