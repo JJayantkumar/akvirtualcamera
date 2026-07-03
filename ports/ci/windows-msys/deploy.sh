@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 
 # akvirtualcamera, virtual camera for Mac and Windows.
 # Copyright (C) 2021  Gonzalo Exequiel Pedone
@@ -40,9 +41,14 @@ export PACKAGES_DIR="${PWD}/packages/windows-${COMPILER}"
 export BUILD_PATH="${PWD}/build-${COMPILER}-x64"
 export PYTHONPATH="${PWD}/DeployTools"
 
+if [ ! -d "${INSTALL_PREFIX}/x64" ]; then
+    echo "Missing build output: ${INSTALL_PREFIX}/x64"
+    exit 1
+fi
+
 /mingw64/bin/strip "${INSTALL_PREFIX}/x64"/*
 
-if [ "${COMPILER}" != clang ]; then
+if [ "${COMPILER}" != clang ] && [ -d "${INSTALL_PREFIX}/x86" ]; then
     /mingw32/bin/strip "${INSTALL_PREFIX}/x86"/*
 fi
 

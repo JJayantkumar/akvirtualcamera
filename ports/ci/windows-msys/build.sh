@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 
 # akvirtualcamera, virtual camera for Mac and Windows.
 # Copyright (C) 2021  Gonzalo Exequiel Pedone
@@ -56,7 +57,7 @@ cmake \
 cmake --build ${buildDir} --parallel ${NJOBS}
 cmake --build ${buildDir} --target install
 
-if [ "${COMPILER}" != clang ]; then
+if [ "${BUILD_X86:-0}" = 1 ] && [ "${COMPILER}" != clang ]; then
     echo
     echo "Building x86 virtual camera driver"
     echo

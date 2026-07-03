@@ -2,6 +2,9 @@ name: Windows MSYS
 
 on: [push, pull_request]
 
+permissions:
+  contents: write
+
 env:
   DISABLE_CCACHE: 1
   NJOBS: 4
@@ -76,17 +79,17 @@ jobs:
       run: ./ports/ci/windows-msys/test.sh
     - name: Release Upload
       uses: softprops/action-gh-release@v3
-      if: ${{ startsWith(github.ref, 'refs/tags/') }}
+      if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') }}
       with:
-        files: packages/windows-gcc/*
+        files: packages/windows-${{ matrix.compiler }}/*
         token: ${{ secrets.GITHUB_TOKEN }}
     - name: Daily Build Upload
       uses: softprops/action-gh-release@v3
-      if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+      if: ${{ github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/') }}
       with:
         body: "${{ github.event.head_commit.message }} (commit: [${{ github.sha }}](https://github.com/webcamoid/akvirtualcamera/commit/${{ github.sha }}))<hr>**Note**: Ignore the commit information of the tag, the files in the release keep updating with every new build, these packages were built from [${{ github.sha }}](https://github.com/webcamoid/akvirtualcamera/commit/${{ github.sha }}) commit."
         prerelease: true
-        files: packages/windows-gcc/*
+        files: packages/windows-${{ matrix.compiler }}/*
         name: Daily Build
         tag_name: daily-build
         token: ${{ secrets.GITHUB_TOKEN }}

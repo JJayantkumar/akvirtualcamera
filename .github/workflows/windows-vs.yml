@@ -29,3 +29,12 @@ jobs:
       run: ports\ci\windows-vs\deploy.bat
     - name: Test
       run: ports\ci\windows-vs\test.bat
+    
+    # --- ADDITION: So you can actually download the .dll files ---
+    - name: Upload Compiled Binaries
+      uses: actions/upload-artifact@v4
+      with:
+        name: AkVirtualCamera-Windows-Binaries
+        path: |
+          **/*.dll
+          **/*.exe
