@@ -133,9 +133,9 @@ AkVCam::BaseFilter::BaseFilter(const GUID &clsid)
             if (!formats.empty())
                 fmts.push_back(formats.front());
 
-            this->d->m_pins->addPin(fmts, "Video");
+            this->d->m_pins->addPin(fmts, "Capture");
         } else {
-            this->d->m_pins->addPin(formats, "Video");
+            this->d->m_pins->addPin(formats, "Capture");
         }
     }
 }

@@ -38,7 +38,9 @@ namespace AkVCam
     class Pin:
             public virtual IPin,
             public virtual IAMStreamConfig,
-            public virtual IAMPushSource
+            public virtual IAMPushSource,
+            public virtual IKsPropertySet, //FIXNO28-Add pins - One line
+            public virtual IQualityControl //FIXNO28-Add pins - One line
     {
         public:
             Pin(BaseFilter *baseFilter=nullptr,
@@ -64,6 +66,28 @@ namespace AkVCam
                                                      void **ppv) override;
             ULONG STDMETHODCALLTYPE AddRef() override;
             ULONG STDMETHODCALLTYPE Release() override;
+
+            // IKsPropertySet
+            HRESULT STDMETHODCALLTYPE Set(REFGUID guidPropSet,
+                                          DWORD dwPropID,
+                                          LPVOID pInstanceData,
+                                          DWORD cbInstanceData,
+                                          LPVOID pPropData,
+                                          DWORD cbPropData) override;
+            HRESULT STDMETHODCALLTYPE Get(REFGUID guidPropSet,
+                                          DWORD dwPropID,
+                                          LPVOID pInstanceData,
+                                          DWORD cbInstanceData,
+                                          LPVOID pPropData,
+                                          DWORD cbPropData,
+                                          DWORD *pcbReturned) override;
+            HRESULT STDMETHODCALLTYPE QuerySupported(REFGUID guidPropSet,
+                                                     DWORD dwPropID,
+                                                     DWORD *pTypeSupport) override;
+
+            // IQualityControl
+            HRESULT STDMETHODCALLTYPE Notify(IBaseFilter *pSelf, Quality q) override;
+            HRESULT STDMETHODCALLTYPE SetSink(IQualityControl *piqc) override;
 
             // IAMLatency
 

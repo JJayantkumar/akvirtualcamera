@@ -23,7 +23,7 @@
 #include <functional>
 #include <limits>
 #include <mutex>
-#include <random>
+#include <cstring> //FIXNO29 - change the random frame to black frames
 #include <sstream>
 #include <thread>
 #include <dshow.h>
@@ -67,7 +67,7 @@ namespace AkVCam
             REFERENCE_TIME m_start {0};
             REFERENCE_TIME m_stop {MAXLONGLONG};
             double m_rate {1.0};
-            FILTER_STATE m_currentState {State_Stopped};
+            std::atomic<FILTER_STATE> m_currentState {State_Stopped}; //FIXNO29
             ULONG m_pushFlags {0};
             REFERENCE_TIME m_streamOffset {0};
             REFERENCE_TIME m_maxStreamOffset {0};
@@ -96,7 +96,7 @@ namespace AkVCam
                                         LONG property,
                                         LONG value,
                                         LONG flags);
-            VideoFrame randomFrame();
+            VideoFrame fallbackFrame(); //FIXNO29 changed from randomframe
     };
 }
 
@@ -198,63 +198,90 @@ AkVCam::BaseFilter *AkVCam::Pin::baseFilter() const
     return this->d->m_baseFilter;
 }
 
-HRESULT AkVCam::Pin::stop()
+HRESULT AkVCam::Pin::stop() //FIXNO29, changed the function
 {
     AkLogFunction();
 
-    if (this->d->m_currentState == State_Stopped)
+    if (this->d->m_currentState.load() == State_Stopped) //FIXNO29 add .load()
         return S_OK;
 
-    this->d->m_currentState = State_Stopped;
+    this->d->m_currentState.store(State_Stopped); //FIXNO29 add .store()
 
     if (this->d->m_bridge)
         this->d->m_bridge->deviceStop(this->d->m_deviceId);
 
-    this->d->m_memAllocator->Decommit(); //FIXNO17 : 1st line (replaced with line below)
-    this->d->m_timer.stop(); //FIXNO17 : 2nd line (replaced with line above)
+    // Wake a producer blocked in IMemAllocator::GetBuffer before joining it.
+    if (this->d->m_memAllocator)
+        this->d->m_memAllocator->Decommit();
+
+    this->d->m_timer.stop();
+
     std::lock_guard<std::mutex> lock(this->d->m_mutex);
     this->d->m_currentFrame = {};
+    this->d->m_frameReady = false;
 
     AkLogInfo("Stream stopped");
 
     return S_OK;
 }
 
-HRESULT AkVCam::Pin::pause()
+HRESULT AkVCam::Pin::pause() //FIXNO29
 {
     AkLogFunction();
 
-    if (this->d->m_currentState == State_Paused)
+    if (this->d->m_currentState.load() == State_Paused)
         return S_OK;
 
-    auto prevState = this->d->m_currentState;
-    this->d->m_currentState = State_Paused;
+    auto prevState = this->d->m_currentState.load();
 
-    if (prevState == State_Stopped) {
+    // A paused source must not keep producing a continuous stream.
+    if (prevState == State_Running) {
+    if (this->d->m_memAllocator) {
+        auto hr = this->d->m_memAllocator->Decommit();
+
+        if (FAILED(hr))
+            return hr;
+    }
+
+    this->d->m_timer.stop();
+
+    if (this->d->m_memAllocator) {
         auto hr = this->d->m_memAllocator->Commit();
 
-        if (FAILED(hr)) {
-            this->d->m_currentState = prevState;
-
+        if (FAILED(hr))
             return hr;
-        }
-
-        {
-            std::lock_guard<std::mutex> lock(this->d->m_mutex);
-
-            this->d->m_pts = 0;
-            this->d->m_firstFrame = true;
-            auto videoFormat = formatFromMediaType(this->d->m_mediaType);
-            this->d->m_currentFrame = {videoFormat};
-            this->d->m_videoConverter.setOutputFormat(videoFormat);
-            auto specs = VideoFormat::formatSpecs(videoFormat.format());
-            this->d->m_isRgb = specs.type() == VideoFormatSpec::VFT_RGB;
-        }
     }
+}
+
+    if (prevState == State_Stopped) {
+        if (!this->d->m_memAllocator)
+            return VFW_E_NOT_CONNECTED;
+
+        auto hr = this->d->m_memAllocator->Commit();
+
+        if (FAILED(hr))
+            return hr;
+
+        std::lock_guard<std::mutex> lock(this->d->m_mutex);
+
+        auto videoFormat = formatFromMediaType(this->d->m_mediaType);
+
+        this->d->m_pts = 0;
+        this->d->m_firstFrame = true;
+        this->d->m_frameReady = false;
+        this->d->m_currentFrame = {videoFormat};
+        this->d->m_videoConverter.setOutputFormat(videoFormat);
+
+        auto specs = VideoFormat::formatSpecs(videoFormat.format());
+        this->d->m_isRgb = specs.type() == VideoFormatSpec::VFT_RGB;
+    }
+
+    this->d->m_currentState.store(State_Paused);
 
     if (this->d->m_bridge)
         this->d->m_bridge->deviceStop(this->d->m_deviceId);
 
+    // A DirectShow source paused from stopped supplies one preroll sample.
     if (prevState == State_Stopped) {
         this->d->m_timer.setInterval(0);
         this->d->m_timer.singleShot();
@@ -263,45 +290,55 @@ HRESULT AkVCam::Pin::pause()
     return S_OK;
 }
 
-HRESULT AkVCam::Pin::run(REFERENCE_TIME tStart)
+HRESULT AkVCam::Pin::run(REFERENCE_TIME tStart) //FIXNO29 Changed function entirely
 {
     AkLogFunction();
     AkLogDebug("Start time: %zu", tStart);
 
-    if (this->d->m_currentState == State_Running)
+    if (this->d->m_currentState.load() == State_Running)
         return S_OK;
 
-    auto prevState = this->d->m_currentState;
-    this->d->m_currentState = State_Running;
+    auto prevState = this->d->m_currentState.load();
     auto videoFormat = formatFromMediaType(this->d->m_mediaType);
+    auto fps = videoFormat.fps();
 
-    if (prevState == State_Stopped) {
-        auto hr = this->d->m_memAllocator->Commit();
+    if (fps.num() <= 0 || fps.den() <= 0) {
+        AkLogError("Invalid frame rate");
 
-        if (FAILED(hr)) {
-            this->d->m_currentState = prevState;
-
-            return hr;
-        }
-
-        {
-            std::lock_guard<std::mutex> lock(this->d->m_mutex);
-
-            this->d->m_pts = 0;
-            this->d->m_firstFrame = true;
-            this->d->m_currentFrame = {videoFormat};
-            this->d->m_videoConverter.setOutputFormat(videoFormat);
-            auto specs = VideoFormat::formatSpecs(videoFormat.format());
-            this->d->m_isRgb = specs.type() == VideoFormatSpec::VFT_RGB;
-        }
+        return VFW_E_INVALIDMEDIATYPE;
     }
 
-    auto fps = videoFormat.fps();
-    this->d->m_timer.setInterval(static_cast<int>(1000 / fps.value()));
-    this->d->m_timer.start();
+    if (prevState == State_Stopped) {
+        if (!this->d->m_memAllocator)
+            return VFW_E_NOT_CONNECTED;
+
+        auto hr = this->d->m_memAllocator->Commit();
+
+        if (FAILED(hr))
+            return hr;
+
+        std::lock_guard<std::mutex> lock(this->d->m_mutex);
+
+        this->d->m_pts = 0;
+        this->d->m_firstFrame = true;
+        this->d->m_frameReady = false;
+        this->d->m_currentFrame = {videoFormat};
+        this->d->m_videoConverter.setOutputFormat(videoFormat);
+
+        auto specs = VideoFormat::formatSpecs(videoFormat.format());
+        this->d->m_isRgb = specs.type() == VideoFormatSpec::VFT_RGB;
+    }
+
+    // State changes only after the frame buffer is initialized.
+    this->d->m_currentState.store(State_Running);
 
     if (this->d->m_bridge)
-        this->d->m_bridge->deviceStart(IpcBridge::StreamType_Input, this->d->m_deviceId);
+        this->d->m_bridge->deviceStart(IpcBridge::StreamType_Input,
+                                       this->d->m_deviceId);
+
+    this->d->m_timer.setInterval(
+        (std::max)(1, static_cast<int>(1000 / fps.value())));
+    this->d->m_timer.start();
 
     AkLogDebug("Stream running");
 
@@ -311,9 +348,9 @@ HRESULT AkVCam::Pin::run(REFERENCE_TIME tStart)
 void AkVCam::Pin::frameReady(const VideoFrame &frame, bool isActive)
 {
     AkLogFunction();
-    AkLogDebug("Running: %d", this->d->m_currentState == State_Running);
+    AkLogDebug("Running: %d", this->d->m_currentState.load() == State_Running);
 
-    if (this->d->m_currentState != State_Running)
+    if (this->d->m_currentState.load() != State_Running) //FIXNO29 add .load()
         return;
 
     AkLogDebug("Active: %d", isActive);
@@ -422,6 +459,8 @@ HRESULT AkVCam::Pin::QueryInterface(const IID &riid, void **ppv)
         COM_INTERFACE(IAMStreamConfig)
         COM_INTERFACE(IAMLatency)
         COM_INTERFACE(IAMPushSource)
+        COM_INTERFACE(IKsPropertySet)//FIXNO28 - added line.
+        COM_INTERFACE(IQualityControl)//FIXNO28 - added line.
         COM_INTERFACE2(IUnknown, IPin)
         COM_INTERFACE_NULL
     };
@@ -544,15 +583,113 @@ HRESULT AkVCam::Pin::SetMaxStreamOffset(REFERENCE_TIME rtMaxOffset)
     return S_OK;
 }
 
-HRESULT AkVCam::Pin::SetFormat(AM_MEDIA_TYPE *pmt)
+//FIXNO28 - entire set of functions (set, get, query supported, notify, setsink) starts
+HRESULT AkVCam::Pin::Set(REFGUID guidPropSet, //FIXNO29 changed the function to add some lines
+                         DWORD dwPropID,
+                         LPVOID pInstanceData,
+                         DWORD cbInstanceData,
+                         LPVOID pPropData,
+                         DWORD cbPropData)
+{
+    UNUSED(pInstanceData);
+    UNUSED(cbInstanceData);
+    UNUSED(pPropData);
+    UNUSED(cbPropData);
+    AkLogFunction();
+
+    if (!IsEqualGUID(guidPropSet, AMPROPSETID_Pin))
+        return E_PROP_SET_UNSUPPORTED;
+
+    if (dwPropID != AMPROPERTY_PIN_CATEGORY)
+        return E_PROP_ID_UNSUPPORTED;
+
+    // AMPROPERTY_PIN_CATEGORY is read-only.
+    return E_PROP_SET_UNSUPPORTED;
+}
+
+HRESULT AkVCam::Pin::Get(REFGUID guidPropSet,
+                         DWORD dwPropID,
+                         LPVOID pInstanceData,
+                         DWORD cbInstanceData,
+                         LPVOID pPropData,
+                         DWORD cbPropData,
+                         DWORD *pcbReturned)
+{
+    UNUSED(pInstanceData);
+    UNUSED(cbInstanceData);
+    AkLogFunction();
+
+    if (!IsEqualGUID(guidPropSet, AMPROPSETID_Pin))
+        return E_PROP_SET_UNSUPPORTED;
+
+    if (dwPropID != AMPROPERTY_PIN_CATEGORY)
+        return E_PROP_ID_UNSUPPORTED;
+
+    if (!pPropData && !pcbReturned)
+        return E_POINTER;
+
+    if (pcbReturned)
+        *pcbReturned = sizeof(GUID);
+
+    if (!pPropData)
+        return S_OK;
+
+    if (cbPropData < sizeof(GUID))
+        return E_UNEXPECTED;
+
+    *reinterpret_cast<GUID *>(pPropData) = PIN_CATEGORY_CAPTURE;
+
+    return S_OK;
+}
+
+HRESULT AkVCam::Pin::QuerySupported(REFGUID guidPropSet, //FIXNO29, changed order and added some lines.
+                                    DWORD dwPropID,
+                                    DWORD *pTypeSupport)
 {
     AkLogFunction();
-    AkLogDebug("Media type: %s", stringFromMediaType(pmt).c_str());
+
+    if (!pTypeSupport)
+        return E_POINTER;
+
+    if (!IsEqualGUID(guidPropSet, AMPROPSETID_Pin))
+        return E_PROP_SET_UNSUPPORTED;
+
+    if (dwPropID != AMPROPERTY_PIN_CATEGORY)
+        return E_PROP_ID_UNSUPPORTED;
+
+    *pTypeSupport = KSPROPERTY_SUPPORT_GET;
+
+    return S_OK;
+}
+
+HRESULT AkVCam::Pin::Notify(IBaseFilter *pSelf, Quality q)
+{
+    UNUSED(pSelf);
+    UNUSED(q);
+    AkLogFunction();
+
+    return S_OK;
+}
+
+HRESULT AkVCam::Pin::SetSink(IQualityControl *piqc)
+{
+    UNUSED(piqc);
+    AkLogFunction();
+
+    return E_NOTIMPL;
+}
+//FIXNO28 - entire function Ends
+
+HRESULT AkVCam::Pin::SetFormat(AM_MEDIA_TYPE *pmt) //FIXNO29 changed the entire function
+{
+    AkLogFunction();
 
     if (!pmt)
         return E_POINTER;
 
-    if (this->d->m_currentState != State_Stopped) {
+    AkLogDebug("Media type: %s", stringFromMediaType(pmt).c_str());
+
+    if (this->d->m_currentState.load() != State_Stopped) {
         AkLogError("The filter graph must be stopped");
 
         return VFW_E_NOT_STOPPED;
@@ -564,23 +701,77 @@ HRESULT AkVCam::Pin::SetFormat(AM_MEDIA_TYPE *pmt)
         return VFW_E_INVALIDMEDIATYPE;
     }
 
-    std::lock_guard<std::mutex> lock(this->d->m_mutex);
-    deleteMediaType(&this->d->m_mediaType);
-    this->d->m_mediaType = createMediaType(pmt);
+    auto newMediaType = createMediaType(pmt);
 
-    if (this->d->m_connectedPin) {
-        this->d->m_connectedPin->Disconnect();
-        this->Disconnect();
-        auto hr = this->d->m_connectedPin->ReceiveConnection(this, this->d->m_mediaType);
+    if (!newMediaType)
+        return E_OUTOFMEMORY;
 
-        if (FAILED(hr)) {
-            AkLogError("The connected pin did not accepted the media type: 0x%x", hr);
+    AM_MEDIA_TYPE *oldMediaType = nullptr;
+    IPin *connectedPin = nullptr;
 
-            return hr;
+    {
+        std::lock_guard<std::mutex> lock(this->d->m_mutex);
+
+        oldMediaType = this->d->m_mediaType;
+        this->d->m_mediaType = newMediaType;
+
+        if (this->d->m_connectedPin) {
+            connectedPin = this->d->m_connectedPin;
+            connectedPin->AddRef();
         }
     }
 
-    return S_OK;
+    if (!connectedPin) {
+        deleteMediaType(&oldMediaType);
+
+        return S_OK;
+    }
+
+    auto hr = connectedPin->Disconnect();
+
+    if (FAILED(hr) && hr != VFW_E_NOT_CONNECTED)
+        goto rollback_before_disconnect;
+
+    hr = this->Disconnect();
+
+    if (FAILED(hr) && hr != VFW_E_NOT_CONNECTED)
+        goto rollback_before_disconnect;
+
+    hr = this->Connect(connectedPin, pmt);
+
+    if (SUCCEEDED(hr)) {
+        connectedPin->Release();
+        deleteMediaType(&oldMediaType);
+
+        return S_OK;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(this->d->m_mutex);
+
+        deleteMediaType(&this->d->m_mediaType);
+        this->d->m_mediaType = oldMediaType;
+        oldMediaType = nullptr;
+    }
+
+    // Best-effort restoration of the prior connection.
+    this->Connect(connectedPin, this->d->m_mediaType);
+    connectedPin->Release();
+
+    return hr;
+
+rollback_before_disconnect:
+    {
+        std::lock_guard<std::mutex> lock(this->d->m_mutex);
+
+        deleteMediaType(&this->d->m_mediaType);
+        this->d->m_mediaType = oldMediaType;
+        oldMediaType = nullptr;
+    }
+
+    connectedPin->Release();
+
+    return hr;
 }
 
 HRESULT AkVCam::Pin::GetFormat(AM_MEDIA_TYPE **pmt)
@@ -721,7 +912,7 @@ HRESULT AkVCam::Pin::Connect(IPin *pReceivePin, const AM_MEDIA_TYPE *pmt)
         return VFW_E_ALREADY_CONNECTED;
     }
 
-    if (this->d->m_currentState != State_Stopped) {
+    if (this->d->m_currentState.load() != State_Stopped) { //FIXNO29 add .load()
         AkLogError("The filter graph is not stopped");
 
         return VFW_E_NOT_STOPPED;
@@ -758,6 +949,7 @@ HRESULT AkVCam::Pin::Connect(IPin *pReceivePin, const AM_MEDIA_TYPE *pmt)
         if (!this->d->m_mediaTypes->contains(pmt)) {
             AkLogError("Media type not supported: %s", stringFromMediaType(pmt).c_str());
 
+            memInputPin->Release(); //FIXNO29 added this line
             return VFW_E_TYPE_NOT_ACCEPTED;
         }
 
@@ -822,6 +1014,7 @@ HRESULT AkVCam::Pin::Connect(IPin *pReceivePin, const AM_MEDIA_TYPE *pmt)
     if (!mediaType) {
         AkLogError("No acceptable media type was found");
 
+        memInputPin->Release(); //FIXNO29 added this line
         return VFW_E_NO_ACCEPTABLE_TYPES;
     }
 
@@ -831,7 +1024,7 @@ HRESULT AkVCam::Pin::Connect(IPin *pReceivePin, const AM_MEDIA_TYPE *pmt)
     if (FAILED(result)) {
         AkLogError("Failed setting the media type: 0x%x", result);
         deleteMediaType(&mediaType);
-
+        memInputPin->Release(); //FIXNO29 added this line
         return result;
     }
 
@@ -923,7 +1116,7 @@ HRESULT AkVCam::Pin::Disconnect()
 
     std::lock_guard<std::mutex> lock(this->d->m_mutex);
 
-    if (this->d->m_currentState != State_Stopped)
+    if (this->d->m_currentState.load() != State_Stopped) //FIXNO29 add .load()
         return VFW_E_NOT_STOPPED;
 
     if (this->d->m_connectedPin) {
@@ -1122,12 +1315,13 @@ HRESULT AkVCam::Pin::NewSegment(REFERENCE_TIME tStart,
     return S_OK;
 }
 
-void AkVCam::PinPrivate::sendFrame(void *userData)
+void AkVCam::PinPrivate::sendFrame(void *userData) //FIXNO20 changed the whole function
 {
     AkLogFunction();
+
     auto self = reinterpret_cast<PinPrivate *>(userData);
 
-    if (self->m_currentState == State_Stopped)
+    if (self->m_currentState.load() == State_Stopped)
         return;
 
     if (!self->m_memAllocator || !self->m_memInputPin)
@@ -1155,61 +1349,100 @@ void AkVCam::PinPrivate::sendFrame(void *userData)
         return;
     }
 
-    { //FIXNO24 modified starts
+    VideoFormat outputFormat;
+
+    {
         std::lock_guard<std::mutex> lock(self->m_mutex);
 
-        // Optimization: Prevent heavy CPU allocation by pointing to the correct frame
-        VideoFrame randomFrm;
-        const VideoFrame* frameToRender = &self->m_currentFrame;
+        outputFormat = formatFromMediaType(self->m_mediaType);
 
-        if (!self->m_frameReady || self->m_currentFrame.size() == 0) {
-            randomFrm = self->randomFrame();
-            frameToRender = &randomFrm;
+        VideoFrame fallback;
+        const VideoFrame *frameToRender = &self->m_currentFrame;
+
+        if (!self->m_frameReady
+            || !self->m_currentFrame
+            || !self->m_currentFrame.format().isSameFormat(outputFormat)
+            || self->m_currentFrame.size() != size) {
+            fallback = self->fallbackFrame();
+            frameToRender = &fallback;
         }
 
-        if (self->m_isRgb) {
+        if (!*frameToRender || frameToRender->size() != size) {
+            AkLogError("Frame does not match the negotiated sample size");
+            sample->Release();
+
+            return;
+        }
+
+        // No sample byte is ever left from a previous frame.
+        memset(pData, 0, size);
+
+        if (self->m_isRgb) { //FIX29 
             auto dstLine = pData;
-            size_t bytesUsed = frameToRender->bytesUsed(0);
-            size_t dstStride = (bytesUsed + 3) & ~3; // Strict DShow DWORD alignment
-            size_t lineSize = frameToRender->lineSize(0);
-            int height = frameToRender->format().height();
+            auto bytesUsed = frameToRender->bytesUsed(0);
+            auto lineSize = frameToRender->lineSize(0);
+            auto height = frameToRender->format().height();
+
+            // CRITICAL FIX 24 RESTORED: DirectShow RGB requires strict 4-byte (DWORD) alignment
+            size_t dstStride = (bytesUsed + 3) & ~3;
 
             for (int y = 0; y < height; ++y) {
-                // Buffer overflow protection against faulty host apps
-                if (dstLine + bytesUsed > pData + size) break; 
-                
-                // DShow RGB is bottom-up. Use raw plane pointer math.
-                const uint8_t* srcLine = frameToRender->constPlane(0) + (size_t)(height - y - 1) * lineSize;
+                // Buffer overflow protection
+                if (dstLine + dstStride > pData + size) {
+                    sample->Release();
+                    return;
+                }
+
+                auto srcLine =
+                        frameToRender->constPlane(0)
+                        + size_t(height - y - 1) * lineSize;
+
                 memcpy(dstLine, srcLine, bytesUsed);
-                dstLine += dstStride;
+                dstLine += dstStride; // Use the DirectShow stride, NOT the internal 32-byte SIMD stride
             }
         } else {
             auto dstLine = pData;
-            for (size_t plane = 0; plane < frameToRender->planes(); ++plane) {
-                size_t bytesUsed = frameToRender->bytesUsed(plane);
-                size_t lineSize = frameToRender->lineSize(plane);
-                int planeHeight = frameToRender->format().height() >> frameToRender->heightDiv(plane);
 
-                // YUY2/UYVY (1 plane) requires DWORD alignment. NV12 (2 planes) is tightly packed.
+            for (size_t plane = 0; plane < frameToRender->planes(); ++plane) {
+                auto bytesUsed = frameToRender->bytesUsed(int(plane));
+                auto lineSize = frameToRender->lineSize(int(plane));
+                auto planeHeight =
+                        frameToRender->format().height()
+                        >> frameToRender->heightDiv(int(plane));
+
+                // CRITICAL FIX 24 RESTORED: 1-plane (YUY2) is DWORD aligned. 2-plane (NV12) is tightly packed.
                 size_t dstStride = (frameToRender->planes() == 1) ? ((bytesUsed + 3) & ~3) : bytesUsed;
 
-                const uint8_t *srcPlane = frameToRender->constPlane(plane);
                 for (int y = 0; y < planeHeight; ++y) {
-                    if (dstLine + bytesUsed > pData + size) break;
-                    
-                    // Bypass constLine() to completely eliminate the NV12 double-division bug
-                    memcpy(dstLine, srcPlane + (size_t)y * lineSize, bytesUsed);
-                    dstLine += dstStride;
+                    // Buffer overflow protection
+                    if (dstLine + dstStride > pData + size) {
+                        sample->Release();
+                        return;
+                    }
+
+                    auto srcLine =
+                            frameToRender->constPlane(int(plane))
+                            + size_t(y) * lineSize;
+
+                    memcpy(dstLine, srcLine, bytesUsed);
+                    dstLine += dstStride; // Use the DirectShow stride, NOT the internal 32-byte SIMD stride
                 }
             }
         }
-    } //FINXNO24 modified Ends
+    }
 
-    auto format = formatFromMediaType(self->m_mediaType);
-    auto fps = format.fps();
-    auto duration = REFERENCE_TIME(TIME_BASE / fps.value());
+    auto fps = outputFormat.fps();
 
-    auto timeStart = self->m_pts;
+    if (fps.num() <= 0 || fps.den() <= 0) {
+        sample->Release();
+
+        return;
+    }
+
+    auto duration =
+            REFERENCE_TIME((TIME_BASE * fps.den()) / fps.num());
+
+    auto timeStart = self->m_pts < 0? 0: self->m_pts;
     auto timeEnd = timeStart + duration;
 
     sample->SetMediaType(self->m_mediaType);
@@ -1219,14 +1452,14 @@ void AkVCam::PinPrivate::sendFrame(void *userData)
     sample->SetDiscontinuity(self->m_firstFrame);
     sample->SetSyncPoint(true);
     sample->SetPreroll(false);
+
     self->m_firstFrame = false;
     self->m_pts = timeEnd;
 
-    AkLogDebug("Sending %s", stringFromMediaSample(sample).c_str());
     auto result = self->m_memInputPin->Receive(sample);
 
     if (result == S_FALSE)
-         result = S_OK;
+        result = S_OK;
 
     sample->Release();
     AkLogDebug("Frame sent");
@@ -1311,21 +1544,63 @@ void AkVCam::PinPrivate::propertyChanged(void *userData,
     }
 }
 
-AkVCam::VideoFrame AkVCam::PinPrivate::randomFrame()
+AkVCam::VideoFrame AkVCam::PinPrivate::fallbackFrame()
 {
     auto format = formatFromMediaType(this->m_mediaType);
-
     VideoFrame frame(format);
-    
-    // FIXNO28: Thread-safe, properly seeded RNG to prevent multi-camera crashes
-    thread_local std::default_random_engine engine(std::random_device{}());
-    thread_local std::uniform_int_distribution<int> distribution(0, 255);
-    
-    std::generate(frame.data(),
-                  frame.data() + frame.size(),
-                  [] () {
-        return uint8_t(distribution(engine));
-    });
 
-    return this->m_videoAdjusts.adjust(frame);
+    if (!frame || !frame.data() || frame.size() < 1)
+        return {};
+
+    // Initialize every byte, including internal stride padding.
+    memset(frame.data(), 0, frame.size());
+
+    switch (format.format()) {
+    case PixelFormat_yuyv422:
+        for (int y = 0; y < format.height(); ++y) {
+            auto line = frame.plane(0) + size_t(y) * frame.lineSize(0);
+
+            for (size_t x = 0; x + 3 < frame.bytesUsed(0); x += 4) {
+                line[x]     = 16;
+                line[x + 1] = 128;
+                line[x + 2] = 16;
+                line[x + 3] = 128;
+            }
+        }
+        break;
+
+    case PixelFormat_uyvy422:
+        for (int y = 0; y < format.height(); ++y) {
+            auto line = frame.plane(0) + size_t(y) * frame.lineSize(0);
+
+            for (size_t x = 0; x + 3 < frame.bytesUsed(0); x += 4) {
+                line[x]     = 128;
+                line[x + 1] = 16;
+                line[x + 2] = 128;
+                line[x + 3] = 16;
+            }
+        }
+        break;
+
+    case PixelFormat_nv12:
+    case PixelFormat_nv21:
+        for (int y = 0; y < format.height(); ++y) {
+            memset(frame.plane(0) + size_t(y) * frame.lineSize(0),
+                   16,
+                   frame.bytesUsed(0));
+        }
+
+        for (int y = 0;
+             y < (format.height() >> frame.heightDiv(1));
+             ++y) {
+            memset(frame.plane(1) + size_t(y) * frame.lineSize(1),
+                   128,
+                   frame.bytesUsed(1));
+        }
+        break;
+    default:
+        // RGB/BGR zero is neutral black.
+        break;
+    }
+    return frame;
 }
